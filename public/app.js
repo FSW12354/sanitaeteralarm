@@ -12,6 +12,7 @@ const state = {
   me: null, permissions: [], lists: { locations: [], injuries: [] }, alarms: new Map(),
   tab: null, ws: null, lastBeat: 0, draft: null, watching: null, handled: new Set(),
   chats: new Map(), unread: new Map(), drafts: {}, openChats: new Set(),
+  dutySection: 'plan', dutyWeekday: 1, dutyFrom: null,
 };
 const ROLE_NAMES = { medic: 'Sanitäter', leader: 'Gruppenführer/in', sender: 'Alarmierungssender', admin: 'Admin' };
 
@@ -221,6 +222,11 @@ function connect() {
     state.lastBeat = Date.now();
     if (msg.type === 'heartbeat') return;
     if (msg.type === 'chat' || msg.type === 'chat_delete') return onChat(msg);
+    if (msg.type === 'notice') {
+      toast(`${msg.title}: ${msg.body}`);
+      if (['mine', 'duty'].includes(state.tab)) render();
+      return;
+    }
     const a = msg.alarm;
     if (a.ended_at) state.alarms.delete(a.id);
     else state.alarms.set(a.id, a);
@@ -528,9 +534,83 @@ function viewAlarms() {
 }
 
 // --- Mein Dienst --------------------------------------------------------------
+const pad = (n) => String(n).padStart(2, '0');
+const isoDate = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const nowTime = () => { const d = new Date(); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+const dayLabel = (iso) => {
+  const [y, m, d] = iso.split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit' });
+};
+const periodLabel = (p) => `${p.name} · ${p.start_time}–${p.end_time}`;
+// Liegt ein Termin noch vor uns? Heute zählt bis zum Ende der Stunde oder Pause.
+const upcoming = (date, period) => date > isoDate(new Date()) || (date === isoDate(new Date()) && period.end_time > nowTime());
+
+function slotStatus(slot) {
+  if (slot.missing > 0) return pill('red', `Fehlt ${slot.missing}`);
+  if (slot.leader_missing > 0) return pill('yellow', 'Gruppenführer fehlt');
+  if (slot.open_offers.length > 0) return pill('yellow', 'Termin abgegeben');
+  return pill('green', 'Besetzt');
+}
+
+function dateRangeForm(onSave, extra = [], { withReason = true } = {}) {
+  const from = h('input', { type: 'date', value: isoDate(new Date()) });
+  const to = h('input', { type: 'date', value: isoDate(new Date()) });
+  const reason = h('input', { placeholder: 'Grund (optional), z. B. Klassenfahrt', maxlength: 100 });
+  return h('div', {},
+    extra,
+    h('div', { class: 'row', style: 'margin-top:8px' }, h('label', {}, 'von', from), h('label', {}, 'bis', to)),
+    withReason ? h('div', { style: 'margin-top:8px' }, reason) : null,
+    h('div', { style: 'margin-top:8px' }, h('button', {
+      class: 'btn', onclick: guard(async () => { await onSave({ start: from.value, end: to.value, reason: reason.value }); render(); }),
+    }, 'Eintragen')));
+}
+
 async function viewMine() {
-  const slots = await api('/duty/me');
+  const [plan, absences] = await Promise.all([api('/duty/plan?days=14'), api('/absences')]);
   const me = state.me;
+  const mine = [];
+  const open = [];
+  for (const day of plan) {
+    for (const slot of day.slots) {
+      if (!upcoming(day.date, slot.period)) continue;
+      const own = slot.people.find((p) => p.user_id === me.id);
+      if (own) mine.push({ day, slot, own });
+      else if (can('alarm.receive') && slot.open) open.push({ day, slot });
+    }
+  }
+  const myRow = ({ day, slot, own }) => h('div', { class: 'list-item' },
+    h('div', {}, h('strong', {}, dayLabel(day.date)), ' ', periodLabel(slot.period),
+      own.status === 'swapped_in' ? h('div', { class: 'muted' }, `übernommen von ${own.for_name}`) : null,
+      own.status === 'extra' ? h('div', { class: 'muted' }, 'zusätzlich übernommen') : null,
+      own.status === 'offered' ? h('div', { class: 'muted' }, 'abgegeben, noch nicht übernommen') : null),
+    own.status === 'regular' ? h('button', {
+      class: 'btn secondary small',
+      onclick: guard(async () => {
+        await api('/duty/offers', { method: 'POST', body: { assignmentId: own.assignment_id, date: day.date } });
+        toast('Termin abgegeben. Andere Sanitäter sehen ihn jetzt unter „Offene Dienste“.');
+        render();
+      }),
+    }, 'Abgeben') : null,
+    own.status === 'offered' ? h('button', {
+      class: 'btn secondary small',
+      onclick: guard(async () => { await api(`/duty/offers/${own.offer_id}`, { method: 'DELETE' }); render(); }),
+    }, 'Zurückziehen') : null,
+    own.status === 'extra' ? h('button', {
+      class: 'btn secondary small',
+      onclick: guard(async () => { await api(`/duty/extras/${own.extra_id}`, { method: 'DELETE' }); render(); }),
+    }, 'Austragen') : null);
+  const openRow = ({ day, slot }) => h('div', { class: 'list-item' },
+    h('div', {}, h('strong', {}, dayLabel(day.date)), ' ', periodLabel(slot.period), ' ', slotStatus(slot),
+      slot.open_offers.length ? h('div', { class: 'muted' }, `abgegeben von ${slot.open_offers.map((o) => o.display_name).join(', ')}`) : null),
+    h('button', {
+      class: 'btn small',
+      onclick: guard(async () => {
+        if (slot.open_offers.length) await api(`/duty/offers/${slot.open_offers[0].offer_id}/take`, { method: 'POST' });
+        else await api('/duty/extras', { method: 'POST', body: { date: day.date, periodId: slot.period.id } });
+        toast('Dienst übernommen');
+        render();
+      }),
+    }, 'Übernehmen'));
   return h('div', {},
     h('h1', {}, 'Mein Dienst'),
     h('div', { class: 'card' },
@@ -545,9 +625,22 @@ async function viewMine() {
         }),
       }, me.available ? 'Auf „nicht verfügbar“ setzen' : 'Wieder verfügbar')),
     h('div', { class: 'card' },
-      h('h2', {}, 'Wochenplan'),
-      slots.length === 0 ? h('p', { class: 'hint' }, 'Du bist noch in keinem Dienst eingetragen.')
-        : h('table', {}, slots.map((s) => h('tr', {}, h('td', {}, WEEKDAYS[s.weekday]), h('td', {}, `${s.start_time}–${s.end_time}`))))),
+      h('h2', {}, 'Meine nächsten Dienste'),
+      mine.length === 0 ? h('p', { class: 'hint' }, 'In den nächsten zwei Wochen hast du keinen Dienst.') : mine.map(myRow)),
+    can('alarm.receive') ? h('div', { class: 'card' },
+      h('h2', {}, 'Offene Dienste'),
+      h('p', { class: 'hint' }, 'Unterbesetzt oder von anderen abgegeben. Wer übernimmt, wird eingetragen; die Dienstplaner werden informiert.'),
+      open.length === 0 ? h('p', { class: 'hint' }, 'Gerade ist alles besetzt.')
+        // Abgegebene Termine zuerst: Dort wartet jemand auf eine Antwort.
+        : [...open].sort((a, b) => (b.slot.open_offers.length > 0) - (a.slot.open_offers.length > 0)).slice(0, 15).map(openRow),
+      open.length > 15 ? h('p', { class: 'hint' }, `und ${open.length - 15} weitere`) : null) : null,
+    h('div', { class: 'card' },
+      h('h2', {}, 'Abwesenheiten'),
+      h('p', { class: 'hint' }, 'Klassenfahrt, Praktikum oder Krankheit: In dieser Zeit hast du keinen Dienst und die Lücke wird sichtbar.'),
+      absences.map((a) => h('div', { class: 'list-item' },
+        h('div', {}, `${dayLabel(a.start_date)} – ${dayLabel(a.end_date)}`, a.reason ? h('span', { class: 'muted' }, ` · ${a.reason}`) : null),
+        h('button', { class: 'btn secondary small', onclick: guard(async () => { await api(`/absences/${a.id}`, { method: 'DELETE' }); render(); }) }, 'Löschen'))),
+      dateRangeForm((v) => api('/absences', { method: 'POST', body: v }))),
     pushCard());
 }
 
@@ -642,39 +735,144 @@ async function viewUsers() {
       }, 'Anlegen'))));
 }
 
-// --- Admin: Dienstplan ------------------------------------------------------------
+// --- Dienstplan (Gruppenführer und Admin) -------------------------------------------
+const DUTY_SECTIONS = [['plan', 'Übersicht'], ['week', 'Wochenplan'], ['raster', 'Schulraster'], ['absent', 'Abwesenheiten'], ['holidays', 'Ferien']];
+
 async function viewDuty() {
-  const [slots, users] = await Promise.all([api('/duty'), api('/users')]);
-  const medics = users.filter((u) => u.role !== 'sender' && !u.disabled);
-  const f = {
-    user: h('select', {}, medics.map((u) => h('option', { value: u.id }, u.display_name))),
-    day: h('select', {}, [1, 2, 3, 4, 5].map((d) => h('option', { value: d }, WEEKDAYS[d]))),
-    start: h('input', { type: 'time', value: '07:45' }),
-    end: h('input', { type: 'time', value: '13:15' }),
+  const section = state.dutySection;
+  const nav = h('div', { class: 'segmented' }, DUTY_SECTIONS.map(([key, label]) => h('button', {
+    class: section === key ? 'active' : '', onclick: () => { state.dutySection = key; render(); },
+  }, label)));
+  const body = await ({ plan: dutyPlan, week: dutyWeek, raster: dutyRaster, absent: dutyAbsences, holidays: dutyHolidays }[section])();
+  return h('div', {}, h('h1', {}, 'Dienstplan'), nav, body);
+}
+
+// Montag der Woche, in der ein Datum liegt
+function mondayOf(d) {
+  const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  x.setDate(x.getDate() - ((x.getDay() + 6) % 7));
+  return x;
+}
+
+async function dutyPlan() {
+  if (!state.dutyFrom) state.dutyFrom = isoDate(mondayOf(new Date()));
+  const plan = await api(`/duty/plan?from=${state.dutyFrom}&days=7`);
+  const shift = (days) => {
+    const [y, m, d] = state.dutyFrom.split('-').map(Number);
+    state.dutyFrom = isoDate(new Date(y, m - 1, d + days));
+    render();
   };
-  const byDay = [1, 2, 3, 4, 5, 6, 7].map((d) => [d, slots.filter((s) => s.weekday === d)]).filter(([, s]) => s.length);
+  const gaps = plan.reduce((n, day) => n + day.slots.filter((x) => x.missing > 0 || x.leader_missing > 0).length, 0);
   return h('div', {},
-    h('h1', {}, 'Dienstplan'),
-    h('p', { class: 'hint' }, 'Wiederholt sich jede Woche. Ist gerade niemand im Dienst, gehen Alarme an alle verfügbaren Sanitäter.'),
+    h('div', { class: 'row', style: 'margin:12px 0' },
+      h('button', { class: 'btn secondary small', style: 'flex:none', onclick: () => shift(-7) }, '‹ Woche'),
+      h('strong', { style: 'text-align:center' }, `ab ${dayLabel(state.dutyFrom)}`),
+      h('button', { class: 'btn secondary small', style: 'flex:none', onclick: () => shift(7) }, 'Woche ›')),
+    h('p', { class: 'hint' }, gaps ? `${gaps} unterbesetzte Dienste in dieser Woche.` : 'Diese Woche ist alles besetzt.'),
+    plan.map((day) => h('div', { class: 'card' },
+      h('h2', { style: 'margin-top:0' }, dayLabel(day.date)),
+      day.holiday ? h('div', { class: 'banner info' }, `${day.holiday}: kein Dienst`) : day.slots
+        // Stunden ohne Vorgabe und ohne Eintrag ausblenden, damit die Lücken auffallen.
+        .filter((slot) => slot.period.min_total > 0 || slot.people.length || slot.absent.length)
+        .map((slot) => h('div', { class: 'list-item' },
+        h('div', {},
+          h('div', {}, h('strong', {}, slot.period.name), h('span', { class: 'muted' }, ` ${slot.period.start_time}–${slot.period.end_time}`)),
+          h('div', {}, slot.people.map((p) => p.display_name + (p.role === 'leader' ? ' (GF)' : '')
+            + (p.status === 'swapped_in' ? ` (für ${p.for_name})` : p.status === 'extra' ? ' (zusätzlich)' : p.status === 'offered' ? ' (abgegeben)' : '')).join(', ') || '–'),
+          slot.absent.length ? h('div', { class: 'muted' }, `abwesend: ${slot.absent.map((p) => p.display_name).join(', ')}`) : null),
+        slotStatus(slot))))));
+}
+
+async function dutyWeek() {
+  const [periods, assignments, people] = await Promise.all([api('/periods'), api('/duty/assignments'), api('/duty/people')]);
+  const day = state.dutyWeekday;
+  const dayNav = h('div', { class: 'segmented' }, [1, 2, 3, 4, 5].map((d) => h('button', {
+    class: d === day ? 'active' : '', onclick: () => { state.dutyWeekday = d; render(); },
+  }, WEEKDAYS[d].slice(0, 2))));
+  return h('div', {},
+    h('p', { class: 'hint' }, 'Regelmäßige Dienste, gelten jede Woche. Einzelne Termine geben Sanitäter selbst ab oder übernehmen sie.'),
+    dayNav,
+    h('div', { class: 'card' }, periods.map((p) => {
+      const here = assignments.filter((a) => a.weekday === day && a.period_id === p.id);
+      const select = h('select', {}, h('option', { value: '' }, '+ eintragen'),
+        people.filter((u) => !here.some((a) => a.user_id === u.id)).map((u) => h('option', { value: u.id }, `${u.display_name} (${u.role_label})`)));
+      select.addEventListener('change', guard(async () => {
+        if (!select.value) return;
+        await api('/duty/assignments', { method: 'POST', body: { weekday: day, periodId: p.id, userId: Number(select.value) } });
+        render();
+      }));
+      return h('div', { class: 'list-item' },
+        h('div', {},
+          h('strong', {}, p.name), h('span', { class: 'muted' }, ` ${p.start_time}–${p.end_time} · mind. ${p.min_total}${p.min_leaders ? `, davon ${p.min_leaders} GF` : ''}`),
+          h('div', { class: 'chips' }, here.map((a) => h('span', { class: 'chip' }, a.display_name, h('button', {
+            title: 'Austragen', onclick: guard(async () => { await api(`/duty/assignments/${a.id}`, { method: 'DELETE' }); render(); }),
+          }, '×'))))),
+        select);
+    })));
+}
+
+async function dutyRaster() {
+  const periods = await api('/periods');
+  const row = (p) => {
+    const f = {
+      name: h('input', { value: p?.name ?? '', placeholder: 'z. B. 1. große Pause' }),
+      start: h('input', { type: 'time', value: p?.start_time ?? '' }),
+      end: h('input', { type: 'time', value: p?.end_time ?? '' }),
+      kind: h('select', {}, h('option', { value: 'lesson', selected: p?.kind === 'lesson' }, 'Stunde'), h('option', { value: 'break', selected: p?.kind === 'break' }, 'Pause')),
+      min: h('input', { type: 'number', min: 0, max: 20, value: p?.min_total ?? 1 }),
+      gf: h('input', { type: 'number', min: 0, max: 20, value: p?.min_leaders ?? 0 }),
+    };
+    const body = () => ({ name: f.name.value, start: f.start.value, end: f.end.value, kind: f.kind.value, minTotal: Number(f.min.value), minLeaders: Number(f.gf.value) });
+    return h('div', { class: 'raster-row' },
+      f.name, h('div', { class: 'row' }, h('label', {}, 'Beginn', f.start), h('label', {}, 'Ende', f.end), h('label', {}, 'Art', f.kind)),
+      h('div', { class: 'row' }, h('label', {}, 'mind. Personen', f.min), h('label', {}, 'davon Gruppenführer', f.gf)),
+      h('div', { class: 'row' },
+        h('button', {
+          class: 'btn small',
+          onclick: guard(async () => {
+            await api(p ? `/periods/${p.id}` : '/periods', { method: p ? 'PUT' : 'POST', body: body() });
+            toast('Gespeichert');
+            render();
+          }),
+        }, p ? 'Speichern' : 'Hinzufügen'),
+        p ? h('button', {
+          class: 'btn secondary small',
+          onclick: guard(async () => {
+            if (!confirm(`„${p.name}“ und alle Dienste darin löschen?`)) return;
+            await api(`/periods/${p.id}`, { method: 'DELETE' });
+            render();
+          }),
+        }, 'Löschen') : null));
+  };
+  return h('div', {},
+    h('p', { class: 'hint' }, 'Stunden und Pausen eurer Schule mit der Mindestbesetzung. Gilt für alle Wochentage.'),
+    h('div', { class: 'card' }, periods.map(row)),
+    h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Neue Stunde oder Pause'), row(null)));
+}
+
+async function dutyAbsences() {
+  const [absences, people] = await Promise.all([api('/absences?all=1'), api('/duty/people')]);
+  const who = h('select', {}, people.map((u) => h('option', { value: u.id }, u.display_name)));
+  return h('div', {},
     h('div', { class: 'card' },
-      byDay.length === 0 ? h('p', { class: 'hint' }, 'Noch keine Dienste eingetragen.') : byDay.map(([d, list]) => h('div', {},
-        h('h2', {}, WEEKDAYS[d]),
-        list.map((s) => h('div', { class: 'list-item' },
-          h('div', {}, `${s.start_time}–${s.end_time} · ${s.display_name}`),
-          h('button', {
-            class: 'btn secondary small',
-            onclick: guard(async () => { await api(`/duty/${s.id}`, { method: 'DELETE' }); render(); }),
-          }, 'Entfernen')))))),
+      absences.length === 0 ? h('p', { class: 'hint' }, 'Keine aktuellen Abwesenheiten.') : absences.map((a) => h('div', { class: 'list-item' },
+        h('div', {}, h('strong', {}, a.display_name), ` ${dayLabel(a.start_date)} – ${dayLabel(a.end_date)}`, a.reason ? h('span', { class: 'muted' }, ` · ${a.reason}`) : null),
+        h('button', { class: 'btn secondary small', onclick: guard(async () => { await api(`/absences/${a.id}`, { method: 'DELETE' }); render(); }) }, 'Löschen')))),
+    h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Abwesenheit eintragen'),
+      dateRangeForm((v) => api('/absences', { method: 'POST', body: { ...v, userId: Number(who.value) } }), [who])));
+}
+
+async function dutyHolidays() {
+  const holidays = await api('/holidays');
+  const name = h('input', { placeholder: 'z. B. Weihnachtsferien' });
+  return h('div', {},
+    h('p', { class: 'hint' }, 'An Ferientagen gibt es keinen Dienst. Alarme gehen dann an alle verfügbaren Sanitäter.'),
     h('div', { class: 'card' },
-      h('h2', {}, 'Dienst eintragen'),
-      h('div', { class: 'row' }, f.user, f.day), h('div', { class: 'row', style: 'margin-top:8px' }, f.start, f.end),
-      h('div', { style: 'margin-top:12px' }, h('button', {
-        class: 'btn',
-        onclick: guard(async () => {
-          await api('/duty', { method: 'POST', body: { userId: Number(f.user.value), weekday: Number(f.day.value), start: f.start.value, end: f.end.value } });
-          render();
-        }),
-      }, 'Eintragen'))));
+      holidays.length === 0 ? h('p', { class: 'hint' }, 'Noch keine Ferien eingetragen.') : holidays.map((x) => h('div', { class: 'list-item' },
+        h('div', {}, h('strong', {}, x.name), ` ${dayLabel(x.start_date)} – ${dayLabel(x.end_date)}`),
+        h('button', { class: 'btn secondary small', onclick: guard(async () => { await api(`/holidays/${x.id}`, { method: 'DELETE' }); render(); }) }, 'Löschen')))),
+    h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Ferien eintragen'),
+      dateRangeForm((v) => api('/holidays', { method: 'POST', body: { name: name.value, start: v.start, end: v.end } }), [name], { withReason: false })));
 }
 
 // --- Admin: Orte und Verletzungsarten ---------------------------------------------
@@ -744,18 +942,20 @@ async function viewAdmin() {
     const nr = h('input', { type: 'number', value: settings.no_response_seconds });
     const sy = h('input', { value: settings.school_year_end, placeholder: 'MM-TT' });
     const cr = h('input', { type: 'number', value: settings.chat_retention_days });
+    const rt = h('input', { type: 'time', value: settings.reminder_time });
     out.append(h('div', { class: 'card' },
       h('h2', {}, 'Einstellungen'),
       h('label', {}, 'Gelb: an alle weiterleiten nach … Sekunden ohne Zusage'), esc,
       h('label', {}, 'Hinweis „Durchsage oder Telefon“ nach … Sekunden ohne Zusage'), nr,
       h('label', {}, 'Schuljahresende (MM-TT): Einsatzprotokolle davor werden gelöscht'), sy,
       h('label', {}, 'Allgemeinen Chat löschen nach … Tagen'), cr,
+      h('label', {}, 'Erinnerung an den heutigen Dienst um'), rt,
       h('div', { style: 'margin-top:12px' }, h('button', {
         class: 'btn',
         onclick: guard(async () => {
           await api('/settings', {
             method: 'PUT',
-            body: { escalate_seconds: Number(esc.value), no_response_seconds: Number(nr.value), school_year_end: sy.value, chat_retention_days: Number(cr.value) },
+            body: { escalate_seconds: Number(esc.value), no_response_seconds: Number(nr.value), school_year_end: sy.value, chat_retention_days: Number(cr.value), reminder_time: rt.value },
           });
           toast('Gespeichert');
         }),

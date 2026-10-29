@@ -72,6 +72,11 @@ function createNotifier(db, { subject = 'mailto:admin@schule.local', log = conso
     update(userIds, alarm) {
       sendSocket(userIds, { type: 'update', alarm });
     },
+    // Hinweise zum Dienstplan: offene App und Mitteilung, aber kein Alarm.
+    remind(userIds, title, body) {
+      sendSocket(userIds, { type: 'notice', title, body });
+      return sendPush(userIds, { title, body, tag: `notice-${Date.now()}` }, 'normal');
+    },
     // Chatnachrichten gehen nur an offene Apps, ohne Ton und ohne Mitteilung.
     message(userIds, message) {
       sendSocket(userIds, message);

@@ -4,7 +4,7 @@ const auth = require('../src/auth');
 
 function setup() {
   const database = db.open(':memory:');
-  const calls = { alarm: [], update: [], noResponse: [], message: [] };
+  const calls = { alarm: [], update: [], noResponse: [], message: [], remind: [] };
   const notifier = {
     publicKey: 'test-key',
     attach() {},
@@ -12,6 +12,7 @@ function setup() {
     update: (ids, a) => calls.update.push({ ids, alarm: a }),
     noResponse: (ids, a) => calls.noResponse.push({ ids: [...ids].sort(), alarm: a }),
     message: (ids, m) => calls.message.push({ ids: [...ids].sort(), message: m }),
+    remind: (ids, title, body) => calls.remind.push({ ids: [...ids].sort(), title, body }),
   };
   const addUser = (username, role, extra = {}) => {
     const { lastInsertRowid } = database.prepare(

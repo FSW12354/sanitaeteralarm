@@ -9,7 +9,7 @@ Das Konzept dazu: [Konzept: Alarmierungssystem für Schulsanitäter](https://cla
 | Rolle | Funktionen |
 | --- | --- |
 | Alarmierungssender | Alarm in drei Schritten (Ort mit optionaler Raumnummer, Verletzungsart, Dringlichkeit), Live-Ansicht der Zusagen, erneut senden, Einsatz beenden |
-| Sanitäter | Vollbild-Alarm mit Ton, „Komme“ / „Kann nicht“, verfügbar / nicht verfügbar, eigener Wochendienstplan, Einsatzchat, allgemeiner Chat, Mitteilungen bei gesperrtem Gerät |
+| Sanitäter | Vollbild-Alarm mit Ton, „Komme“ / „Kann nicht“, verfügbar / nicht verfügbar, eigene Dienste, Termine abgeben und übernehmen, Abwesenheiten, Einsatzchat, allgemeiner Chat, Mitteilungen bei gesperrtem Gerät |
 | Gruppenführer/in | eine Ebene unter dem Admin; Rechte stellt der Admin unter „Protokoll & Einstellungen“ ein. Startwerte: wie Sanitäter, dazu Alarm auslösen, alle Einsätze sehen und steuern, Dienstplan pflegen, Protokoll sehen, Chatnachrichten löschen |
 | Admin | alles oben, dazu Benutzer und Rollen, Rechte der Gruppenführer, Orte und Verletzungsarten, Testalarm, Einstellungen |
 
@@ -27,6 +27,16 @@ Alarmregeln (Zeiten in den Einstellungen änderbar):
 - Ist gerade niemand im Dienst, geht jeder Alarm an alle verfügbaren Sanitäter.
 - Bei Rot und Gelb wird der Sender nach 2 Minuten ohne Zusage aufgefordert, per Durchsage oder Telefon zu alarmieren.
 - Einsatzprotokolle werden zum Schuljahresende (Standard: 31.07.) automatisch gelöscht. Namen von Verletzten werden nicht gespeichert.
+
+Dienstplan:
+
+- **Schulraster**: Stunden und Pausen mit Uhrzeit und Mindestbesetzung (Start: Pausen 2 Personen, davon 1 Gruppenführer/in; Stunden ohne Vorgabe). Dienste werden pro Wochentag im Raster eingeteilt.
+- **Abwesenheiten** (Klassenfahrt, Praktikum, Krankheit) tragen Sanitäter selbst ein; Dienstplaner auch für andere. Abwesende haben keinen Dienst, die Lücke wird sichtbar.
+- **Ferien**: kein Dienst; Alarme gehen dann an alle verfügbaren Sanitäter.
+- **Diensttausch**: Sanitäter geben einen einzelnen Termin ab, ein anderer übernimmt ihn. Bis dahin bleibt der Termin beim Abgebenden. Dienstplaner werden informiert.
+- **Offene Dienste**: unterbesetzte oder abgegebene Termine der nächsten zwei Wochen; mit „Übernehmen“ trägt man sich ein.
+- **Erinnerung**: An Schultagen um 07:30 Uhr (einstellbar) eine Mitteilung an alle, die heute Dienst haben.
+- „Im Dienst“ für die Alarmierung heißt: zur aktuellen Uhrzeit im Raster eingeteilt, nicht abwesend, kein Ferientag.
 
 Rechte sind intern einzelne Berechtigungen (`src/auth.js`). Der Admin hat immer alle Rechte, auch künftige.
 
@@ -74,6 +84,7 @@ Aufbau:
 - `src/server.js` – Start, HTTPS, Eskalationsprüfung alle 5 Sekunden
 - `src/app.js` – HTTP-API und WebSocket
 - `src/alarms.js` – Alarmregeln, Eskalation, Löschfrist
+- `src/duty.js` – Dienstplan: wer wann Dienst hat, Erinnerungen
 - `src/notifier.js` – Verteilung über WebSocket und Web Push
 - `src/auth.js` – Rollen, Berechtigungen, Passwörter
 - `src/db.js` – SQLite-Datenbank (`node:sqlite`), Startlisten für Orte und Verletzungsarten
@@ -81,5 +92,5 @@ Aufbau:
 
 ## Noch nicht im Prototyp
 
-- Dienstplan nach Schulraster, Mindestbesetzung, Abwesenheiten, Ferien, Diensttausch (Vorschlag steht im Konzept)
+- Dienstplan Stufe 3: Fairness-Zähler und PDF-Export
 - Einsatznotiz beim Abschließen

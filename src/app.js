@@ -5,6 +5,9 @@ const { WebSocketServer } = require('ws');
 const auth = require('./auth');
 const { getSetting, setSetting } = require('./db');
 const { createAlarmService, DEFAULTS } = require('./alarms');
+const {
+  createDutyService, dateStr, weekdayOf, isValidDate,
+} = require('./duty');
 
 const COOKIE = 'sanialarm';
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -185,27 +188,198 @@ function createApp({ db, notifier, secureCookies = false, clock }) {
   }));
 
   // --- Dienstplan ------------------------------------------------------------
-  app.get('/api/duty/me', need('duty.view_own'), wrap((req) => db.prepare(
-    'SELECT * FROM duty_slots WHERE user_id = ? ORDER BY weekday, start_time').all(req.user.id)));
+  const duty = createDutyService(db);
+  const canSeePlan = (req, _res, next) => {
+    if (!req.user) return next(new HttpError(401, 'Bitte anmelden'));
+    if (!auth.can(req.user, 'duty.view_own') && !auth.can(req.user, 'duty.manage')) return next(new HttpError(403, 'Keine Berechtigung'));
+    next();
+  };
+  const today = () => dateStr(now());
+  const userById = (id) => db.prepare('SELECT * FROM users WHERE id = ?').get(Number(id));
+  const managers = () => db.prepare('SELECT * FROM users WHERE disabled = 0').all()
+    .filter((u) => auth.can(u, 'duty.manage')).map((u) => u.id);
+  function checkPeriod(b, row = {}) {
+    const v = {
+      name: String(b.name ?? row.name ?? '').trim(),
+      start_time: b.start ?? row.start_time,
+      end_time: b.end ?? row.end_time,
+      kind: b.kind ?? row.kind ?? 'lesson',
+      min_total: Number(b.minTotal ?? row.min_total ?? 1),
+      min_leaders: Number(b.minLeaders ?? row.min_leaders ?? 0),
+    };
+    if (!v.name) throw new HttpError(400, 'Namen angeben, z. B. „1. große Pause“');
+    if (!TIME_RE.test(v.start_time) || !TIME_RE.test(v.end_time) || v.start_time >= v.end_time) throw new HttpError(400, 'Ungültige Uhrzeit');
+    if (!['lesson', 'break'].includes(v.kind)) throw new HttpError(400, 'Art muss Stunde oder Pause sein');
+    if (![v.min_total, v.min_leaders].every((n) => Number.isInteger(n) && n >= 0 && n <= 20) || v.min_leaders > v.min_total) {
+      throw new HttpError(400, 'Mindestbesetzung zwischen 0 und 20; Gruppenführer höchstens so viele wie insgesamt');
+    }
+    return v;
+  }
+  function checkRange(start, end) {
+    if (!isValidDate(start) || !isValidDate(end) || start > end) throw new HttpError(400, 'Zeitraum als Datum von–bis angeben');
+  }
 
-  app.get('/api/duty', need('duty.manage'), wrap(() => db.prepare(`
-    SELECT d.*, u.display_name FROM duty_slots d JOIN users u ON u.id = d.user_id
-    ORDER BY d.weekday, d.start_time, u.display_name`).all()));
-
-  app.post('/api/duty', need('duty.manage'), wrap((req) => {
-    const { userId, weekday, start, end } = req.body || {};
-    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(Number(userId));
-    if (!user || !auth.can(user, 'alarm.receive')) throw new HttpError(400, 'Nur Sanitäter können Dienst haben');
-    if (!(Number(weekday) >= 1 && Number(weekday) <= 7)) throw new HttpError(400, 'Ungültiger Wochentag');
-    if (!TIME_RE.test(start) || !TIME_RE.test(end) || start >= end) throw new HttpError(400, 'Ungültige Uhrzeit');
+  app.get('/api/periods', canSeePlan, wrap(() => duty.periods()));
+  app.post('/api/periods', need('duty.manage'), wrap((req) => {
+    const v = checkPeriod(req.body || {});
     const { lastInsertRowid } = db.prepare(
-      'INSERT INTO duty_slots (user_id, weekday, start_time, end_time) VALUES (?, ?, ?, ?)',
-    ).run(user.id, Number(weekday), start, end);
+      'INSERT INTO periods (name, start_time, end_time, kind, min_total, min_leaders) VALUES (?, ?, ?, ?, ?, ?)',
+    ).run(v.name, v.start_time, v.end_time, v.kind, v.min_total, v.min_leaders);
     return { id: Number(lastInsertRowid) };
   }));
+  app.put('/api/periods/:id', need('duty.manage'), wrap((req) => {
+    const row = db.prepare('SELECT * FROM periods WHERE id = ?').get(Number(req.params.id));
+    if (!row) throw new HttpError(404, 'Eintrag nicht gefunden');
+    const v = checkPeriod(req.body || {}, row);
+    db.prepare('UPDATE periods SET name = ?, start_time = ?, end_time = ?, kind = ?, min_total = ?, min_leaders = ? WHERE id = ?')
+      .run(v.name, v.start_time, v.end_time, v.kind, v.min_total, v.min_leaders, row.id);
+    return { ok: true };
+  }));
+  app.delete('/api/periods/:id', need('duty.manage'), wrap((req) => {
+    db.prepare('DELETE FROM periods WHERE id = ?').run(Number(req.params.id));
+    return { ok: true };
+  }));
 
-  app.delete('/api/duty/:id', need('duty.manage'), wrap((req) => {
-    db.prepare('DELETE FROM duty_slots WHERE id = ?').run(Number(req.params.id));
+  app.get('/api/duty/plan', canSeePlan, wrap((req) => {
+    const from = isValidDate(req.query.from) ? req.query.from : today();
+    const days = Math.min(Math.max(Number(req.query.days) || 14, 1), 42);
+    return duty.plan(from, days);
+  }));
+
+  // Wer kann Dienst haben? Für die Auswahl beim Einteilen.
+  app.get('/api/duty/people', need('duty.manage'), wrap(() => db.prepare('SELECT * FROM users WHERE disabled = 0 ORDER BY display_name').all()
+    .filter((u) => auth.can(u, 'alarm.receive'))
+    .map((u) => ({ id: u.id, display_name: u.display_name, role: u.role, role_label: auth.ROLE_LABELS[u.role] }))));
+
+  app.get('/api/duty/assignments', canSeePlan, wrap(() => db.prepare(`
+    SELECT d.*, u.display_name, u.role FROM duty_assignments d JOIN users u ON u.id = d.user_id
+    WHERE u.disabled = 0 ORDER BY d.weekday, d.period_id, u.display_name`).all()));
+  app.post('/api/duty/assignments', need('duty.manage'), wrap((req) => {
+    const { weekday, periodId, userId } = req.body || {};
+    const user = userById(userId);
+    if (!user || !auth.can(user, 'alarm.receive')) throw new HttpError(400, 'Nur Sanitäter und Gruppenführer können Dienst haben');
+    if (!(Number(weekday) >= 1 && Number(weekday) <= 7)) throw new HttpError(400, 'Ungültiger Wochentag');
+    if (!db.prepare('SELECT 1 FROM periods WHERE id = ?').get(Number(periodId))) throw new HttpError(400, 'Unbekannte Stunde oder Pause');
+    const res = db.prepare('INSERT OR IGNORE INTO duty_assignments (weekday, period_id, user_id) VALUES (?, ?, ?)')
+      .run(Number(weekday), Number(periodId), user.id);
+    if (res.changes === 0) throw new HttpError(400, `${user.display_name} ist hier schon eingeteilt`);
+    return { id: Number(res.lastInsertRowid) };
+  }));
+  app.delete('/api/duty/assignments/:id', need('duty.manage'), wrap((req) => {
+    db.prepare('DELETE FROM duty_assignments WHERE id = ?').run(Number(req.params.id));
+    return { ok: true };
+  }));
+
+  // Ferien und Feiertage
+  app.get('/api/holidays', canSeePlan, wrap(() => db.prepare('SELECT * FROM holidays ORDER BY start_date').all()));
+  app.post('/api/holidays', need('duty.manage'), wrap((req) => {
+    const { name = '', start, end } = req.body || {};
+    checkRange(start, end);
+    if (!String(name).trim()) throw new HttpError(400, 'Namen angeben, z. B. „Weihnachtsferien“');
+    const { lastInsertRowid } = db.prepare('INSERT INTO holidays (name, start_date, end_date) VALUES (?, ?, ?)')
+      .run(String(name).trim(), start, end);
+    return { id: Number(lastInsertRowid) };
+  }));
+  app.delete('/api/holidays/:id', need('duty.manage'), wrap((req) => {
+    db.prepare('DELETE FROM holidays WHERE id = ?').run(Number(req.params.id));
+    return { ok: true };
+  }));
+
+  // Abwesenheiten: eigene selbst eintragen; Dienstplaner sehen und pflegen alle.
+  app.get('/api/absences', canSeePlan, wrap((req) => {
+    const all = req.query.all === '1' && auth.can(req.user, 'duty.manage');
+    return db.prepare(`
+      SELECT a.*, u.display_name FROM absences a JOIN users u ON u.id = a.user_id
+      WHERE a.end_date >= ? ${all ? '' : 'AND a.user_id = ?'} ORDER BY a.start_date`)
+      .all(...(all ? [today()] : [today(), req.user.id]));
+  }));
+  app.post('/api/absences', canSeePlan, wrap((req) => {
+    const { start, end, reason = '', userId } = req.body || {};
+    checkRange(start, end);
+    const target = userId && Number(userId) !== req.user.id ? userById(userId) : req.user;
+    if (target !== req.user && !auth.can(req.user, 'duty.manage')) throw new HttpError(403, 'Nur für dich selbst');
+    if (!target) throw new HttpError(400, 'Unbekannte Person');
+    const { lastInsertRowid } = db.prepare('INSERT INTO absences (user_id, start_date, end_date, reason) VALUES (?, ?, ?, ?)')
+      .run(target.id, start, end, String(reason).trim().slice(0, 100));
+    return { id: Number(lastInsertRowid) };
+  }));
+  app.delete('/api/absences/:id', canSeePlan, wrap((req) => {
+    const row = db.prepare('SELECT * FROM absences WHERE id = ?').get(Number(req.params.id));
+    if (!row) throw new HttpError(404, 'Eintrag nicht gefunden');
+    if (row.user_id !== req.user.id && !auth.can(req.user, 'duty.manage')) throw new HttpError(403, 'Keine Berechtigung');
+    db.prepare('DELETE FROM absences WHERE id = ?').run(row.id);
+    return { ok: true };
+  }));
+
+  // Diensttausch: Termin abgeben, ein anderer übernimmt. Dienstplaner werden informiert.
+  function informManagers(text, except = []) {
+    notifier.remind(managers().filter((id) => !except.includes(id)), 'Dienstplan', text);
+  }
+  function inSlot(userId, date, periodId) {
+    const [day] = duty.plan(date, 1);
+    const s = day?.slots.find((x) => x.period.id === periodId);
+    return !!s?.people.some((p) => p.user_id === userId);
+  }
+
+  app.post('/api/duty/offers', need('duty.view_own'), wrap((req) => {
+    const { assignmentId, date } = req.body || {};
+    const a = db.prepare('SELECT * FROM duty_assignments WHERE id = ?').get(Number(assignmentId));
+    if (!a || a.user_id !== req.user.id) throw new HttpError(403, 'Nur eigene Dienste abgeben');
+    if (!isValidDate(date) || date < today() || weekdayOf(date) !== a.weekday) throw new HttpError(400, 'Ungültiger Termin');
+    const res = db.prepare('INSERT OR IGNORE INTO duty_offers (assignment_id, date, created_at) VALUES (?, ?, ?)')
+      .run(a.id, date, now().toISOString());
+    if (res.changes === 0) throw new HttpError(400, 'Dieser Termin ist schon abgegeben');
+    return { id: Number(res.lastInsertRowid) };
+  }));
+  app.delete('/api/duty/offers/:id', need('duty.view_own'), wrap((req) => {
+    const o = db.prepare(`SELECT o.*, a.user_id FROM duty_offers o JOIN duty_assignments a ON a.id = o.assignment_id WHERE o.id = ?`)
+      .get(Number(req.params.id));
+    if (!o) throw new HttpError(404, 'Angebot nicht gefunden');
+    if (o.user_id !== req.user.id && !auth.can(req.user, 'duty.manage')) throw new HttpError(403, 'Keine Berechtigung');
+    if (o.taken_by) throw new HttpError(400, 'Der Termin wurde schon übernommen');
+    db.prepare('DELETE FROM duty_offers WHERE id = ?').run(o.id);
+    return { ok: true };
+  }));
+  app.post('/api/duty/offers/:id/take', need('duty.view_own'), wrap((req) => {
+    if (!auth.can(req.user, 'alarm.receive')) throw new HttpError(403, 'Nur Sanitäter können Dienste übernehmen');
+    const o = db.prepare(`
+      SELECT o.*, a.user_id, a.period_id, p.name AS period_name, u.display_name AS owner_name
+      FROM duty_offers o JOIN duty_assignments a ON a.id = o.assignment_id
+      JOIN periods p ON p.id = a.period_id JOIN users u ON u.id = a.user_id WHERE o.id = ?`).get(Number(req.params.id));
+    if (!o) throw new HttpError(404, 'Angebot nicht gefunden');
+    if (o.taken_by) throw new HttpError(400, 'Schon übernommen');
+    if (o.user_id === req.user.id) throw new HttpError(400, 'Das ist dein eigener Dienst');
+    if (o.date < today()) throw new HttpError(400, 'Der Termin ist vorbei');
+    if (inSlot(req.user.id, o.date, o.period_id)) throw new HttpError(400, 'Du hast zu dieser Zeit schon Dienst');
+    db.prepare('UPDATE duty_offers SET taken_by = ?, taken_at = ? WHERE id = ?').run(req.user.id, now().toISOString(), o.id);
+    const text = `${req.user.display_name} übernimmt für ${o.owner_name}: ${o.period_name} am ${o.date.split('-').reverse().join('.')}`;
+    notifier.remind([o.user_id], 'Dienst übernommen', text);
+    informManagers(text, [req.user.id]);
+    return { ok: true };
+  }));
+
+  // Offene Dienste: ein Sanitäter trägt sich für einen einzelnen Termin ein.
+  app.post('/api/duty/extras', need('duty.view_own'), wrap((req) => {
+    if (!auth.can(req.user, 'alarm.receive')) throw new HttpError(403, 'Nur Sanitäter können Dienste übernehmen');
+    const { date, periodId, userId } = req.body || {};
+    const target = userId && Number(userId) !== req.user.id ? userById(userId) : req.user;
+    if (target !== req.user && !auth.can(req.user, 'duty.manage')) throw new HttpError(403, 'Nur für dich selbst');
+    if (!target || !auth.can(target, 'alarm.receive')) throw new HttpError(400, 'Unbekannte Person');
+    const period = db.prepare('SELECT * FROM periods WHERE id = ?').get(Number(periodId));
+    if (!period || !isValidDate(date) || date < today()) throw new HttpError(400, 'Ungültiger Termin');
+    if (duty.holidayOn(date)) throw new HttpError(400, 'An diesem Tag sind Ferien');
+    if (inSlot(target.id, date, period.id)) throw new HttpError(400, 'Zu dieser Zeit ist schon Dienst eingetragen');
+    const { lastInsertRowid } = db.prepare('INSERT INTO duty_extras (date, period_id, user_id) VALUES (?, ?, ?)').run(date, period.id, target.id);
+    if (target === req.user) {
+      informManagers(`${req.user.display_name} übernimmt den offenen Dienst ${period.name} am ${date.split('-').reverse().join('.')}.`, [req.user.id]);
+    }
+    return { id: Number(lastInsertRowid) };
+  }));
+  app.delete('/api/duty/extras/:id', need('duty.view_own'), wrap((req) => {
+    const e = db.prepare('SELECT * FROM duty_extras WHERE id = ?').get(Number(req.params.id));
+    if (!e) throw new HttpError(404, 'Eintrag nicht gefunden');
+    if (e.user_id !== req.user.id && !auth.can(req.user, 'duty.manage')) throw new HttpError(403, 'Keine Berechtigung');
+    db.prepare('DELETE FROM duty_extras WHERE id = ?').run(e.id);
     return { ok: true };
   }));
 
@@ -327,6 +501,10 @@ function createApp({ db, notifier, secureCookies = false, clock }) {
       const n = Number(b.chat_retention_days);
       if (!Number.isInteger(n) || n < 1 || n > 365) throw new HttpError(400, 'Chat-Löschfrist zwischen 1 und 365 Tagen');
       updates.push(['chat_retention_days', n]);
+    }
+    if (b.reminder_time !== undefined) {
+      if (!TIME_RE.test(b.reminder_time)) throw new HttpError(400, 'Erinnerung als Uhrzeit HH:MM angeben');
+      updates.push(['reminder_time', b.reminder_time]);
     }
     if (b.school_year_end !== undefined) {
       if (!/^(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(b.school_year_end)) throw new HttpError(400, 'Datum als MM-TT angeben');
