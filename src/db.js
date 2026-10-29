@@ -24,20 +24,11 @@ const DEFAULT_INJURIES = [
 ];
 
 // Startraster; der Admin passt es an die Zeiten der Schule an.
-// Mindestbesetzung zum Start: Pausen 2 Personen, davon 1 Gruppenführer/in; Stunden ohne Vorgabe.
-const DEFAULT_PERIODS = [
-  ['1. Stunde', '07:45', '08:30', 'lesson'],
-  ['2. Stunde', '08:30', '09:15', 'lesson'],
-  ['1. große Pause', '09:15', '09:35', 'break'],
-  ['3. Stunde', '09:35', '10:20', 'lesson'],
-  ['4. Stunde', '10:20', '11:05', 'lesson'],
-  ['2. große Pause', '11:05', '11:20', 'break'],
-  ['5. Stunde', '11:20', '12:05', 'lesson'],
-  ['6. Stunde', '12:05', '12:50', 'lesson'],
-  ['Mittagspause', '12:50', '13:35', 'break'],
-  ['7. Stunde', '13:35', '14:20', 'lesson'],
-  ['8. Stunde', '14:20', '15:05', 'lesson'],
-];
+// Start: ein Tagesdienst von 08:00 bis 14:30 Uhr mit mindestens 2 Sanitätern.
+const DEFAULT_PERIOD = { name: 'Tagesdienst', start: '08:00', end: '14:30', min: 2 };
+// Startraster aus der ersten Dienstplan-Version; wird ersetzt, solange noch niemand eingeteilt ist.
+const OLD_DEFAULT_NAMES = ['1. Stunde', '2. Stunde', '1. große Pause', '3. Stunde', '4. Stunde', '2. große Pause',
+  '5. Stunde', '6. Stunde', 'Mittagspause', '7. Stunde', '8. Stunde'];
 
 function open(file) {
   if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -119,7 +110,7 @@ function open(file) {
     );
     CREATE INDEX IF NOT EXISTS chat_by_alarm ON chat_messages (alarm_id, id);
 
-    -- Dienstplan nach Schulraster: Stunden und Pausen statt Uhrzeiten.
+    -- Dienstzeiten (Start: ein Tagesdienst). kind stammt aus der ersten Version mit Stunden und Pausen.
     CREATE TABLE IF NOT EXISTS periods (
       id INTEGER PRIMARY KEY,
       name TEXT NOT NULL,
@@ -175,17 +166,25 @@ function open(file) {
     const ins = db.prepare('INSERT INTO locations (building, name, sort) VALUES (?, ?, ?)');
     DEFAULT_LOCATIONS.forEach(([b, n], i) => ins.run(b, n, i));
   }
+  replaceOldRaster(db);
   if (db.prepare('SELECT COUNT(*) AS n FROM periods').get().n === 0) {
-    const ins = db.prepare('INSERT INTO periods (name, start_time, end_time, kind, min_total, min_leaders) VALUES (?, ?, ?, ?, ?, ?)');
-    for (const [name, start, end, kind] of DEFAULT_PERIODS) {
-      ins.run(name, start, end, kind, kind === 'break' ? 2 : 0, kind === 'break' ? 1 : 0);
-    }
+    db.prepare("INSERT INTO periods (name, start_time, end_time, kind, min_total, min_leaders) VALUES (?, ?, ?, 'lesson', ?, 0)")
+      .run(DEFAULT_PERIOD.name, DEFAULT_PERIOD.start, DEFAULT_PERIOD.end, DEFAULT_PERIOD.min);
   }
   if (db.prepare('SELECT COUNT(*) AS n FROM injury_types').get().n === 0) {
     const ins = db.prepare('INSERT INTO injury_types (name, sort) VALUES (?, ?)');
     DEFAULT_INJURIES.forEach((n, i) => ins.run(n, i));
   }
   return db;
+}
+
+// Das alte Startraster (Stunden und Pausen) wird durch den Tagesdienst ersetzt,
+// aber nur, wenn es unverändert ist und noch niemand eingeteilt wurde.
+function replaceOldRaster(db) {
+  const names = db.prepare('SELECT name FROM periods ORDER BY start_time, id').all().map((r) => r.name);
+  if (names.join('|') !== OLD_DEFAULT_NAMES.join('|')) return;
+  const used = ['duty_assignments', 'duty_extras'].some((t) => db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get().n > 0);
+  if (!used) db.exec('DELETE FROM periods');
 }
 
 // Datenbanken aus dem Prototyp kennen die Rolle Gruppenführer/in noch nicht.

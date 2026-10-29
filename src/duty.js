@@ -2,8 +2,8 @@
 const auth = require('./auth');
 const { getSetting, setSetting } = require('./db');
 
-// Dienstplan nach Schulraster. Wer an einem Tag in einer Stunde oder Pause Dienst hat, ergibt sich aus:
-// regelmäßigem Dienst (Wochentag + Raster) – Abwesenheit – abgegebenem Termin + übernommenem Termin + Zusatzdienst.
+// Dienstplan nach Dienstzeiten (Start: ein Tagesdienst 08:00–14:30). Wer an einem Tag in einer Dienstzeit Dienst hat, ergibt sich aus:
+// regelmäßigem Dienst (Wochentag + Dienstzeit) – Abwesenheit – abgegebenem Termin + übernommenem Termin + Zusatzdienst.
 // An Ferientagen hat niemand Dienst.
 
 const DAY_MS = 24 * 3600 * 1000;

@@ -207,7 +207,7 @@ function createApp({ db, notifier, secureCookies = false, clock }) {
       min_total: Number(b.minTotal ?? row.min_total ?? 1),
       min_leaders: Number(b.minLeaders ?? row.min_leaders ?? 0),
     };
-    if (!v.name) throw new HttpError(400, 'Namen angeben, z. B. „1. große Pause“');
+    if (!v.name) throw new HttpError(400, 'Namen angeben, z. B. „Tagesdienst“');
     if (!TIME_RE.test(v.start_time) || !TIME_RE.test(v.end_time) || v.start_time >= v.end_time) throw new HttpError(400, 'Ungültige Uhrzeit');
     if (!['lesson', 'break'].includes(v.kind)) throw new HttpError(400, 'Art muss Stunde oder Pause sein');
     if (![v.min_total, v.min_leaders].every((n) => Number.isInteger(n) && n >= 0 && n <= 20) || v.min_leaders > v.min_total) {
@@ -259,7 +259,7 @@ function createApp({ db, notifier, secureCookies = false, clock }) {
     const user = userById(userId);
     if (!user || !auth.can(user, 'alarm.receive')) throw new HttpError(400, 'Nur Sanitäter und Gruppenführer können Dienst haben');
     if (!(Number(weekday) >= 1 && Number(weekday) <= 7)) throw new HttpError(400, 'Ungültiger Wochentag');
-    if (!db.prepare('SELECT 1 FROM periods WHERE id = ?').get(Number(periodId))) throw new HttpError(400, 'Unbekannte Stunde oder Pause');
+    if (!db.prepare('SELECT 1 FROM periods WHERE id = ?').get(Number(periodId))) throw new HttpError(400, 'Unbekannte Dienstzeit');
     const res = db.prepare('INSERT OR IGNORE INTO duty_assignments (weekday, period_id, user_id) VALUES (?, ?, ?)')
       .run(Number(weekday), Number(periodId), user.id);
     if (res.changes === 0) throw new HttpError(400, `${user.display_name} ist hier schon eingeteilt`);
