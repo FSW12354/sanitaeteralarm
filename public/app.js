@@ -1,0 +1,668 @@
+'use strict';
+/* Sanitäteralarm – Web-App für Sanitäter, Alarmierungssender und Admin. */
+
+const WEEKDAYS = ['', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag'];
+const URGENCIES = [
+  { key: 'red', label: 'Rot, sofort', hint: 'Lebensgefahr möglich. Alarm an alle.' },
+  { key: 'yellow', label: 'Gelb, dringend', hint: 'Zeitnah Hilfe nötig. Erst der Dienst, dann alle.' },
+  { key: 'green', label: 'Grün, nicht dringend', hint: 'z. B. Pflaster, Kühlpack. Nur der Dienst.' },
+];
+
+const state = {
+  me: null, permissions: [], lists: { locations: [], injuries: [] }, alarms: new Map(),
+  tab: null, ws: null, lastBeat: 0, draft: null, watching: null, handled: new Set(),
+};
+
+// --- Hilfsfunktionen --------------------------------------------------------
+function h(tag, attrs = {}, ...children) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v === false || v == null) continue;
+    if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+    else if (k === 'class') el.className = v;
+    else if (k === 'value') el.value = v;
+    else el.setAttribute(k, v === true ? '' : v);
+  }
+  for (const c of children.flat()) {
+    if (c == null || c === false) continue;
+    el.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  }
+  return el;
+}
+
+async function api(path, { method = 'GET', body } = {}) {
+  const res = await fetch(`/api${path}`, {
+    method,
+    headers: body ? { 'Content-Type': 'application/json' } : {},
+    body: body ? JSON.stringify(body) : undefined,
+    credentials: 'same-origin',
+  });
+  if (res.status === 401 && path !== '/login') {
+    state.me = null;
+    renderLogin();
+    throw new Error('Bitte anmelden');
+  }
+  const data = res.headers.get('content-type')?.includes('json') ? await res.json() : null;
+  if (!res.ok) throw new Error(data?.error || `Fehler ${res.status}`);
+  return data;
+}
+
+function toast(msg) {
+  const t = h('div', { class: 'toast' }, msg);
+  document.body.append(t);
+  setTimeout(() => t.remove(), 3500);
+}
+
+const can = (p) => state.permissions.includes(p);
+const time = (iso) => (iso ? new Date(iso).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) : '');
+const dateTime = (iso) => new Date(iso).toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' });
+const pill = (u, label) => h('span', { class: `pill ${u}` }, label);
+const guard = (fn) => async (...args) => {
+  try {
+    await fn(...args);
+  } catch (err) {
+    toast(err.message);
+  }
+};
+
+// --- Alarmton ---------------------------------------------------------------
+// Ein Ton läuft, solange ein offener Alarm auf dem Bildschirm steht.
+let audio = null;
+function startSound() {
+  try {
+    audio = audio || { ctx: new (window.AudioContext || window.webkitAudioContext)(), timer: null };
+    if (audio.timer) return;
+    audio.ctx.resume();
+    const beep = () => {
+      const o = audio.ctx.createOscillator();
+      const g = audio.ctx.createGain();
+      o.type = 'square';
+      o.frequency.value = 880;
+      g.gain.value = 0.2;
+      o.connect(g).connect(audio.ctx.destination);
+      o.start();
+      o.frequency.setValueAtTime(660, audio.ctx.currentTime + 0.25);
+      o.stop(audio.ctx.currentTime + 0.5);
+    };
+    beep();
+    audio.timer = setInterval(beep, 900);
+    navigator.vibrate?.([400, 200, 400]);
+  } catch { /* Ton ist nicht überall erlaubt */ }
+}
+function stopSound() {
+  if (audio?.timer) clearInterval(audio.timer);
+  if (audio) audio.timer = null;
+}
+// iOS erlaubt Ton erst nach einer Berührung: Audio beim ersten Antippen freischalten.
+document.addEventListener('touchend', () => {
+  if (!audio) {
+    try {
+      audio = { ctx: new (window.AudioContext || window.webkitAudioContext)(), timer: null };
+      audio.ctx.resume();
+    } catch { /* ignorieren */ }
+  }
+}, { once: true });
+
+// --- Start ------------------------------------------------------------------
+async function boot() {
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+  try {
+    const me = await api('/me');
+    state.me = me.user;
+    state.permissions = me.permissions;
+    state.vapid = me.vapidPublicKey;
+  } catch {
+    return renderLogin();
+  }
+  state.lists = await api('/lists');
+  for (const a of await api('/alarms?active=1')) state.alarms.set(a.id, a);
+  connect();
+  renderShell();
+  checkIncoming();
+}
+
+function renderLogin() {
+  document.getElementById('top').hidden = true;
+  document.getElementById('tabs').hidden = true;
+  const main = document.getElementById('main');
+  const user = h('input', { autocomplete: 'username', autocapitalize: 'none' });
+  const pass = h('input', { type: 'password', autocomplete: 'current-password' });
+  main.replaceChildren(h('div', { class: 'card' },
+    h('h1', {}, 'Sanitäteralarm'),
+    h('p', { class: 'hint' }, 'Einmal anmelden. Das Gerät bleibt danach angemeldet.'),
+    h('form', {
+      onsubmit: guard(async (e) => {
+        e.preventDefault();
+        await api('/login', { method: 'POST', body: { username: user.value, password: pass.value } });
+        location.reload();
+      }),
+    },
+    h('label', {}, 'Benutzername'), user,
+    h('label', {}, 'Passwort'), pass,
+    h('div', { style: 'margin-top:16px' }, h('button', { class: 'btn', type: 'submit' }, 'Anmelden'))),
+  ));
+}
+
+function tabsFor() {
+  const tabs = [];
+  if (can('alarm.send')) tabs.push(['send', 'Alarm senden']);
+  tabs.push(['alarms', 'Alarme']);
+  if (can('duty.view_own')) tabs.push(['mine', 'Mein Dienst']);
+  if (can('users.manage')) tabs.push(['users', 'Benutzer']);
+  if (can('duty.manage')) tabs.push(['duty', 'Dienstplan']);
+  if (can('lists.manage')) tabs.push(['lists', 'Orte & Verletzungen']);
+  if (can('log.view') || can('settings.manage')) tabs.push(['admin', 'Protokoll & Einstellungen']);
+  tabs.push(['account', 'Konto']);
+  return tabs;
+}
+
+function renderShell() {
+  document.getElementById('top').hidden = false;
+  document.getElementById('who').replaceChildren(
+    h('div', {}, state.me.display_name), h('div', {}, state.me.role_label),
+  );
+  const tabs = tabsFor();
+  if (!state.tab) state.tab = tabs[0][0];
+  const nav = document.getElementById('tabs');
+  nav.hidden = false;
+  nav.replaceChildren(...tabs.map(([key, label]) => h('button', {
+    class: state.tab === key ? 'active' : '',
+    onclick: () => { state.tab = key; state.watching = null; renderShell(); },
+  }, label)));
+  render();
+}
+
+function render() {
+  const main = document.getElementById('main');
+  const views = {
+    send: viewSend, alarms: viewAlarms, mine: viewMine, users: viewUsers,
+    duty: viewDuty, lists: viewLists, admin: viewAdmin, account: viewAccount,
+  };
+  const out = (views[state.tab] || viewAlarms)();
+  if (out instanceof Promise) {
+    out.then((el) => main.replaceChildren(el)).catch((err) => toast(err.message));
+  } else {
+    main.replaceChildren(out);
+  }
+}
+
+// --- Echtzeit ---------------------------------------------------------------
+function connect() {
+  const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
+  state.ws = ws;
+  ws.onopen = () => { state.lastBeat = Date.now(); setOffline(false); };
+  ws.onmessage = (ev) => {
+    const msg = JSON.parse(ev.data);
+    state.lastBeat = Date.now();
+    if (msg.type === 'heartbeat') return;
+    const a = msg.alarm;
+    if (a.ended_at) state.alarms.delete(a.id);
+    else state.alarms.set(a.id, a);
+    if (msg.type === 'alarm') state.handled.delete(a.id);
+    if (msg.type === 'no_response') toast('Keine Zusage! Bitte per Durchsage oder Telefon alarmieren.');
+    checkIncoming();
+    if (['alarms', 'send'].includes(state.tab)) render();
+  };
+  ws.onclose = () => {
+    setOffline(true);
+    setTimeout(async () => {
+      // Nach einer Unterbrechung den Stand neu laden, damit nichts verpasst wird.
+      try {
+        state.alarms.clear();
+        for (const a of await api('/alarms?active=1')) state.alarms.set(a.id, a);
+        checkIncoming();
+      } catch { /* weiter versuchen */ }
+      connect();
+    }, 3000);
+  };
+}
+
+function setOffline(off) {
+  document.getElementById('offline').hidden = !off;
+}
+setInterval(() => {
+  if (state.ws && state.lastBeat && Date.now() - state.lastBeat > 75_000) setOffline(true);
+}, 10_000);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && state.me) {
+    api('/alarms?active=1').then((list) => {
+      state.alarms = new Map(list.map((a) => [a.id, a]));
+      checkIncoming();
+      render();
+    }).catch(() => {});
+  }
+});
+
+// --- Eingehender Alarm (Vollbild) ---------------------------------------------
+function myRecipient(a) {
+  return a.recipients.find((r) => r.user_id === state.me.id);
+}
+
+function checkIncoming() {
+  const overlay = document.getElementById('overlay');
+  const open = [...state.alarms.values()]
+    .filter((a) => !a.ended_at && myRecipient(a) && !myRecipient(a).response && !state.handled.has(a.id))
+    .sort((x, y) => x.created_at.localeCompare(y.created_at));
+  if (open.length === 0) {
+    overlay.hidden = true;
+    stopSound();
+    return;
+  }
+  const a = open[0];
+  overlay.className = `u-${a.urgency}`;
+  overlay.hidden = false;
+  const reply = (response) => guard(async () => {
+    const updated = await api(`/alarms/${a.id}/respond`, { method: 'POST', body: { response } });
+    state.alarms.set(a.id, updated);
+    state.handled.add(a.id);
+    checkIncoming();
+    if (response === 'coming') { state.tab = 'alarms'; renderShell(); }
+  });
+  overlay.replaceChildren(
+    h('div', {},
+      h('div', { class: 'mid' }, `${a.is_test ? 'TESTALARM · ' : ''}${a.urgency_label} · ${time(a.created_at)}`),
+      h('div', { class: 'big' }, a.location),
+      h('div', { class: 'mid' }, a.injury),
+      a.note ? h('div', { class: 'mid' }, a.note) : null,
+      a.sender_name ? h('div', { class: 'mid' }, `Gemeldet von ${a.sender_name}`) : null,
+      open.length > 1 ? h('div', { class: 'mid' }, `+ ${open.length - 1} weitere Alarme`) : null),
+    h('div', { class: 'actions' },
+      h('button', { class: 'coming', onclick: reply('coming') }, 'Komme'),
+      h('button', { class: 'decline', onclick: reply('declined') }, 'Kann nicht')),
+  );
+  startSound();
+}
+
+// --- Alarm senden -------------------------------------------------------------
+function viewSend() {
+  if (state.watching) return viewAlarmStatus(state.watching);
+  if (!state.draft) {
+    const own = state.lists.locations.find((l) => l.id === state.me.default_location_id);
+    state.draft = { step: own ? 2 : 1, locationId: own?.id ?? null, room: '', injuryId: null, note: '', isTest: false };
+  }
+  const d = state.draft;
+  const steps = h('div', { class: 'steps' }, [1, 2, 3].map((n) => h('span', { class: n <= d.step ? 'on' : '' })));
+  const back = d.step > 1 ? h('button', { class: 'btn secondary small', onclick: () => { d.step -= 1; render(); } }, 'Zurück') : null;
+
+  if (d.step === 1) {
+    const byBuilding = new Map();
+    for (const l of state.lists.locations) {
+      if (!byBuilding.has(l.building)) byBuilding.set(l.building, []);
+      byBuilding.get(l.building).push(l);
+    }
+    return h('div', {}, steps, h('h1', {}, '1. Wo?'),
+      [...byBuilding.entries()].map(([b, locs]) => h('div', {},
+        h('h2', {}, b),
+        h('div', { class: 'tiles' }, locs.map((l) => h('button', {
+          class: 'tile',
+          onclick: () => { d.locationId = l.id; d.step = 2; render(); },
+        }, l.name))))));
+  }
+
+  const loc = state.lists.locations.find((l) => l.id === d.locationId);
+  if (d.step === 2) {
+    const room = h('input', { value: d.room, placeholder: 'Raumnummer (optional)', oninput: (e) => { d.room = e.target.value; } });
+    return h('div', {}, steps,
+      h('div', { class: 'row' }, h('h1', {}, '2. Was ist passiert?'), back),
+      h('p', { class: 'hint' }, `Ort: ${loc ? `${loc.building} – ${loc.name}` : '?'} `,
+        h('button', { class: 'btn secondary small', onclick: () => { d.step = 1; render(); } }, 'Ort ändern')),
+      room,
+      h('div', { class: 'tiles', style: 'margin-top:12px' }, state.lists.injuries.map((i) => h('button', {
+        class: 'tile',
+        onclick: () => { d.injuryId = i.id; d.step = 3; render(); },
+      }, i.name))));
+  }
+
+  const inj = state.lists.injuries.find((i) => i.id === d.injuryId);
+  const note = h('input', { value: d.note, placeholder: 'Zusatz (optional), z. B. „Schüler ist ansprechbar“', oninput: (e) => { d.note = e.target.value; } });
+  const send = (urgency) => guard(async () => {
+    const alarm = await api('/alarms', {
+      method: 'POST',
+      body: { locationId: d.locationId, room: d.room, injuryId: d.injuryId, urgency, note: d.note, isTest: d.isTest },
+    });
+    state.alarms.set(alarm.id, alarm);
+    state.draft = null;
+    state.watching = alarm.id;
+    render();
+  });
+  return h('div', {}, steps,
+    h('div', { class: 'row' }, h('h1', {}, '3. Wie dringend?'), back),
+    h('p', { class: 'hint' }, `${loc.building} – ${loc.name}${d.room ? `, Raum ${d.room}` : ''} · ${inj.name}`),
+    note,
+    can('alarm.test') ? h('label', {}, h('input', {
+      type: 'checkbox', style: 'width:auto', checked: d.isTest, onchange: (e) => { d.isTest = e.target.checked; },
+    }), ' Nur Testalarm') : null,
+    h('div', { class: 'tiles', style: 'margin-top:12px' }, URGENCIES.map((u) => h('button', {
+      class: `tile u-${u.key}`, onclick: send(u.key),
+    }, u.label, h('small', {}, u.hint)))),
+    h('p', { class: 'hint' }, 'Ein Antippen der Dringlichkeit sendet den Alarm sofort.'));
+}
+
+function viewAlarmStatus(id) {
+  const a = state.alarms.get(id);
+  const wrap = h('div', {});
+  if (!a) {
+    wrap.append(h('div', { class: 'card' }, 'Der Alarm ist beendet.'),
+      h('button', { class: 'btn', onclick: () => { state.watching = null; render(); } }, 'Neuen Alarm senden'));
+    return wrap;
+  }
+  return h('div', {}, alarmCard(a, true),
+    h('button', { class: 'btn secondary', onclick: () => { state.watching = null; render(); } }, 'Weiteren Alarm senden'));
+}
+
+// --- Alarmliste ---------------------------------------------------------------
+function alarmCard(a, detailed = false) {
+  const coming = a.recipients.filter((r) => r.response === 'coming');
+  const declined = a.recipients.filter((r) => r.response === 'declined');
+  const waiting = a.recipients.filter((r) => !r.response);
+  const mine = myRecipient(a);
+  const isSender = a.sender_id === state.me.id;
+  const canControl = can('alarm.view_all') || isSender || mine?.response === 'coming';
+  return h('div', { class: 'card', id: `alarm-${a.id}` },
+    a.urgency === 'red' && (isSender || can('alarm.view_all'))
+      ? h('div', { class: 'banner danger' }, 'Lebensgefahr? Sofort 112 rufen!') : null,
+    a.no_response_at && coming.length === 0
+      ? h('div', { class: 'banner danger' }, 'Keine Zusage! Bitte per Durchsage oder Telefon alarmieren.') : null,
+    a.escalated_at ? h('div', { class: 'banner info' }, `Um ${time(a.escalated_at)} an alle Sanitäter weitergeleitet.`) : null,
+    h('div', { class: 'row' },
+      h('div', {}, pill(a.urgency, a.urgency_label), ' ', a.is_test ? pill('grey', 'Test') : null),
+      h('div', { class: 'muted', style: 'text-align:right' }, time(a.created_at))),
+    h('h2', {}, a.location),
+    h('div', {}, a.injury, a.note ? ` · ${a.note}` : ''),
+    h('p', { class: 'hint' }, `Gemeldet von ${a.sender_name || '?'}`),
+    h('div', {}, h('strong', {}, `Kommen (${coming.length}): `), coming.map((r) => `${r.display_name} (${time(r.responded_at)})`).join(', ') || '–'),
+    detailed || can('alarm.view_all') ? [
+      h('div', {}, h('strong', {}, `Können nicht (${declined.length}): `), declined.map((r) => r.display_name).join(', ') || '–'),
+      h('div', {}, h('strong', {}, `Noch keine Antwort (${waiting.length}): `), waiting.map((r) => r.display_name).join(', ') || '–'),
+    ] : null,
+    a.recipients.length === 0 ? h('div', { class: 'banner danger' }, 'Kein Sanitäter ist verfügbar! Bitte per Durchsage oder Telefon alarmieren.') : null,
+    h('div', { class: 'row', style: 'margin-top:12px' },
+      mine && !a.ended_at ? h('button', {
+        class: 'btn secondary small',
+        onclick: guard(async () => {
+          state.alarms.set(a.id, await api(`/alarms/${a.id}/respond`, { method: 'POST', body: { response: mine.response === 'coming' ? 'declined' : 'coming' } }));
+          render();
+        }),
+      }, mine.response === 'coming' ? 'Doch nicht' : 'Komme') : null,
+      isSender || can('alarm.view_all') ? h('button', {
+        class: 'btn secondary small',
+        onclick: guard(async () => { await api(`/alarms/${a.id}/resend`, { method: 'POST' }); toast('Erneut gesendet'); }),
+      }, 'Erneut senden') : null,
+      canControl ? h('button', {
+        class: 'btn danger small',
+        onclick: guard(async () => {
+          if (!confirm('Einsatz beenden?')) return;
+          await api(`/alarms/${a.id}/end`, { method: 'POST' });
+          state.alarms.delete(a.id);
+          render();
+        }),
+      }, 'Einsatz beenden') : null));
+}
+
+function viewAlarms() {
+  const list = [...state.alarms.values()].sort((x, y) => y.created_at.localeCompare(x.created_at));
+  return h('div', {}, h('h1', {}, 'Laufende Alarme'),
+    list.length === 0 ? h('p', { class: 'hint' }, 'Gerade gibt es keinen laufenden Alarm.') : list.map((a) => alarmCard(a)),
+    can('alarm.receive') ? pushCard() : null);
+}
+
+// --- Mein Dienst --------------------------------------------------------------
+async function viewMine() {
+  const slots = await api('/duty/me');
+  const me = state.me;
+  return h('div', {},
+    h('h1', {}, 'Mein Dienst'),
+    h('div', { class: 'card' },
+      h('strong', {}, me.available ? 'Du bist verfügbar.' : 'Du bist nicht verfügbar.'),
+      h('p', { class: 'hint' }, 'Nicht verfügbar z. B. während einer Klassenarbeit. Dann bekommst du keine Alarme.'),
+      h('button', {
+        class: me.available ? 'btn secondary' : 'btn',
+        onclick: guard(async () => {
+          await api('/me/availability', { method: 'PUT', body: { available: !me.available } });
+          me.available = !me.available;
+          render();
+        }),
+      }, me.available ? 'Auf „nicht verfügbar“ setzen' : 'Wieder verfügbar')),
+    h('div', { class: 'card' },
+      h('h2', {}, 'Wochenplan'),
+      slots.length === 0 ? h('p', { class: 'hint' }, 'Du bist noch in keinem Dienst eingetragen.')
+        : h('table', {}, slots.map((s) => h('tr', {}, h('td', {}, WEEKDAYS[s.weekday]), h('td', {}, `${s.start_time}–${s.end_time}`))))),
+    pushCard());
+}
+
+// --- Mitteilungen (Web Push) ---------------------------------------------------
+function pushCard() {
+  const card = h('div', { class: 'card' }, h('h2', {}, 'Alarm bei gesperrtem Gerät'));
+  const standalone = window.navigator.standalone || matchMedia('(display-mode: standalone)').matches;
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    card.append(h('p', { class: 'hint' }, standalone
+      ? 'Dieses Gerät unterstützt keine Mitteilungen. Nötig ist iOS 16.4 oder neuer.'
+      : 'Auf dem iPhone: In Safari auf „Teilen“ tippen, dann „Zum Home-Bildschirm“. Danach die App vom Home-Bildschirm öffnen und hier Mitteilungen einschalten.'));
+    return card;
+  }
+  if (Notification.permission === 'granted') {
+    card.append(h('p', { class: 'hint' }, 'Mitteilungen sind eingeschaltet. Tipp: Den Fokus-Modus so einstellen, dass Sanitäteralarm durchkommt.'));
+    // Anmeldung beim Server auffrischen, falls sie verloren ging.
+    subscribePush().catch(() => {});
+    return card;
+  }
+  card.append(
+    h('p', { class: 'hint' }, 'Damit Alarme auch bei gesperrtem Bildschirm ankommen, Mitteilungen einschalten.'),
+    h('button', { class: 'btn', onclick: guard(async () => { await subscribePush(true); toast('Mitteilungen eingeschaltet'); render(); }) }, 'Mitteilungen einschalten'),
+  );
+  return card;
+}
+
+function urlB64ToUint8Array(b64) {
+  const pad = '='.repeat((4 - (b64.length % 4)) % 4);
+  const raw = atob((b64 + pad).replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from([...raw].map((c) => c.charCodeAt(0)));
+}
+
+async function subscribePush(ask = false) {
+  if (ask) {
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') throw new Error('Mitteilungen wurden nicht erlaubt');
+  }
+  const reg = await navigator.serviceWorker.ready;
+  const sub = await reg.pushManager.getSubscription()
+    || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64ToUint8Array(state.vapid) });
+  await api('/push/subscribe', { method: 'POST', body: { subscription: sub.toJSON() } });
+}
+
+// --- Admin: Benutzer --------------------------------------------------------------
+async function viewUsers() {
+  const users = await api('/users');
+  const locs = state.lists.locations;
+  const f = {
+    displayName: h('input', { placeholder: 'Name, z. B. Lea M.' }),
+    username: h('input', { placeholder: 'Benutzername', autocapitalize: 'none' }),
+    password: h('input', { placeholder: 'Startpasswort (mind. 8 Zeichen)' }),
+    role: h('select', {}, h('option', { value: 'medic' }, 'Sanitäter'), h('option', { value: 'sender' }, 'Alarmierungssender'), h('option', { value: 'admin' }, 'Admin')),
+    loc: h('select', {}, h('option', { value: '' }, 'Standort (nur feste Sender-Geräte)'), locs.map((l) => h('option', { value: l.id }, `${l.building} – ${l.name}`))),
+  };
+  return h('div', {},
+    h('h1', {}, 'Benutzer'),
+    h('div', { class: 'card' }, users.map((u) => h('div', { class: 'list-item' },
+      h('div', {}, h('strong', {}, u.display_name), ' ', h('span', { class: 'muted' }, `${u.username} · ${u.role_label}`),
+        u.disabled ? [' ', pill('grey', 'gesperrt')] : null,
+        u.role !== 'sender' && !u.available ? [' ', pill('grey', 'nicht verfügbar')] : null),
+      h('div', { class: 'row', style: 'flex:none' },
+        h('select', {
+          onchange: guard(async (e) => { await api(`/users/${u.id}`, { method: 'PUT', body: { role: e.target.value } }); render(); }),
+        }, ['medic', 'sender', 'admin'].map((r) => h('option', { value: r, selected: u.role === r }, { medic: 'Sanitäter', sender: 'Sender', admin: 'Admin' }[r]))),
+        h('button', {
+          class: 'btn secondary small',
+          onclick: guard(async () => {
+            const pw = prompt(`Neues Passwort für ${u.display_name} (mind. 8 Zeichen):`);
+            if (!pw) return;
+            await api(`/users/${u.id}`, { method: 'PUT', body: { password: pw } });
+            toast('Passwort geändert, Gerät wurde abgemeldet');
+          }),
+        }, 'Passwort'),
+        h('button', {
+          class: 'btn secondary small',
+          onclick: guard(async () => { await api(`/users/${u.id}`, { method: 'PUT', body: { disabled: !u.disabled } }); render(); }),
+        }, u.disabled ? 'Entsperren' : 'Sperren'))))),
+    h('div', { class: 'card' },
+      h('h2', {}, 'Neuen Benutzer anlegen'),
+      f.displayName, h('div', { style: 'height:8px' }), f.username, h('div', { style: 'height:8px' }), f.password,
+      h('div', { style: 'height:8px' }), f.role, h('div', { style: 'height:8px' }), f.loc,
+      h('div', { style: 'margin-top:12px' }, h('button', {
+        class: 'btn',
+        onclick: guard(async () => {
+          await api('/users', {
+            method: 'POST',
+            body: { displayName: f.displayName.value, username: f.username.value, password: f.password.value, role: f.role.value, defaultLocationId: f.loc.value ? Number(f.loc.value) : null },
+          });
+          toast('Benutzer angelegt');
+          render();
+        }),
+      }, 'Anlegen'))));
+}
+
+// --- Admin: Dienstplan ------------------------------------------------------------
+async function viewDuty() {
+  const [slots, users] = await Promise.all([api('/duty'), api('/users')]);
+  const medics = users.filter((u) => u.role !== 'sender' && !u.disabled);
+  const f = {
+    user: h('select', {}, medics.map((u) => h('option', { value: u.id }, u.display_name))),
+    day: h('select', {}, [1, 2, 3, 4, 5].map((d) => h('option', { value: d }, WEEKDAYS[d]))),
+    start: h('input', { type: 'time', value: '07:45' }),
+    end: h('input', { type: 'time', value: '13:15' }),
+  };
+  const byDay = [1, 2, 3, 4, 5, 6, 7].map((d) => [d, slots.filter((s) => s.weekday === d)]).filter(([, s]) => s.length);
+  return h('div', {},
+    h('h1', {}, 'Dienstplan'),
+    h('p', { class: 'hint' }, 'Wiederholt sich jede Woche. Ist gerade niemand im Dienst, gehen Alarme an alle verfügbaren Sanitäter.'),
+    h('div', { class: 'card' },
+      byDay.length === 0 ? h('p', { class: 'hint' }, 'Noch keine Dienste eingetragen.') : byDay.map(([d, list]) => h('div', {},
+        h('h2', {}, WEEKDAYS[d]),
+        list.map((s) => h('div', { class: 'list-item' },
+          h('div', {}, `${s.start_time}–${s.end_time} · ${s.display_name}`),
+          h('button', {
+            class: 'btn secondary small',
+            onclick: guard(async () => { await api(`/duty/${s.id}`, { method: 'DELETE' }); render(); }),
+          }, 'Entfernen')))))),
+    h('div', { class: 'card' },
+      h('h2', {}, 'Dienst eintragen'),
+      h('div', { class: 'row' }, f.user, f.day), h('div', { class: 'row', style: 'margin-top:8px' }, f.start, f.end),
+      h('div', { style: 'margin-top:12px' }, h('button', {
+        class: 'btn',
+        onclick: guard(async () => {
+          await api('/duty', { method: 'POST', body: { userId: Number(f.user.value), weekday: Number(f.day.value), start: f.start.value, end: f.end.value } });
+          render();
+        }),
+      }, 'Eintragen'))));
+}
+
+// --- Admin: Orte und Verletzungsarten ---------------------------------------------
+async function viewLists() {
+  const [locs, injuries] = await Promise.all([api('/locations'), api('/injuries')]);
+  const refresh = async () => { state.lists = await api('/lists'); render(); };
+  const toggle = (route, row) => h('button', {
+    class: 'btn secondary small',
+    onclick: guard(async () => { await api(`/${route}/${row.id}`, { method: 'PUT', body: { active: !row.active } }); await refresh(); }),
+  }, row.active ? 'Ausblenden' : 'Einblenden');
+  const rename = (route, row, fields) => h('button', {
+    class: 'btn secondary small',
+    onclick: guard(async () => {
+      const body = {};
+      for (const [key, label] of fields) {
+        const v = prompt(label, row[key]);
+        if (v === null) return;
+        body[key] = v;
+      }
+      await api(`/${route}/${row.id}`, { method: 'PUT', body });
+      await refresh();
+    }),
+  }, 'Ändern');
+  const lb = h('input', { placeholder: 'Gebäude, z. B. Hauptgebäude' });
+  const ln = h('input', { placeholder: 'Bereich, z. B. 1. Obergeschoss' });
+  const inj = h('input', { placeholder: 'Verletzungsart' });
+  return h('div', {},
+    h('h1', {}, 'Orte & Verletzungsarten'),
+    h('p', { class: 'hint' }, 'Ausgeblendete Einträge erscheinen nicht mehr beim Alarmieren, bleiben aber im Protokoll erhalten.'),
+    h('div', { class: 'card' }, h('h2', {}, 'Orte'),
+      locs.map((l) => h('div', { class: 'list-item' },
+        h('div', { class: l.active ? '' : 'muted' }, `${l.building} – ${l.name}`),
+        h('div', { class: 'row', style: 'flex:none' }, rename('locations', l, [['building', 'Gebäude'], ['name', 'Bereich']]), toggle('locations', l)))),
+      h('div', { class: 'row', style: 'margin-top:12px' }, lb, ln),
+      h('div', { style: 'margin-top:8px' }, h('button', {
+        class: 'btn', onclick: guard(async () => { await api('/locations', { method: 'POST', body: { building: lb.value, name: ln.value } }); await refresh(); }),
+      }, 'Ort hinzufügen'))),
+    h('div', { class: 'card' }, h('h2', {}, 'Verletzungsarten'),
+      injuries.map((i) => h('div', { class: 'list-item' },
+        h('div', { class: i.active ? '' : 'muted' }, i.name),
+        h('div', { class: 'row', style: 'flex:none' }, rename('injuries', i, [['name', 'Verletzungsart']]), toggle('injuries', i)))),
+      h('div', { style: 'margin-top:12px' }, inj),
+      h('div', { style: 'margin-top:8px' }, h('button', {
+        class: 'btn', onclick: guard(async () => { await api('/injuries', { method: 'POST', body: { name: inj.value } }); await refresh(); }),
+      }, 'Verletzungsart hinzufügen'))));
+}
+
+// --- Admin: Protokoll und Einstellungen ----------------------------------------------
+async function viewAdmin() {
+  const [all, settings] = await Promise.all([api('/alarms'), can('settings.manage') ? api('/settings') : null]);
+  const out = h('div', {}, h('h1', {}, 'Protokoll & Einstellungen'));
+  if (can('log.view')) {
+    out.append(h('div', { class: 'card' },
+      h('div', { class: 'row' }, h('h2', {}, 'Einsatzprotokoll'), h('a', { class: 'btn secondary small', href: '/api/log.csv', style: 'flex:none;text-decoration:none' }, 'Als CSV exportieren')),
+      all.length === 0 ? h('p', { class: 'hint' }, 'Noch keine Einsätze.') : h('table', {},
+        h('tr', {}, h('th', {}, 'Zeit'), h('th', {}, 'Ort / Verletzung'), h('th', {}, 'Zusage')),
+        all.map((a) => {
+          const first = a.recipients.filter((r) => r.response === 'coming').map((r) => r.responded_at).sort()[0];
+          return h('tr', {},
+            h('td', {}, dateTime(a.created_at), h('br'), pill(a.urgency, a.urgency_label), a.is_test ? [' ', pill('grey', 'Test')] : null),
+            h('td', {}, a.location, h('br'), h('span', { class: 'muted' }, a.injury)),
+            h('td', {}, first ? `nach ${Math.round((new Date(first) - new Date(a.created_at)) / 1000)} s` : 'keine'));
+        }))));
+  }
+  if (settings) {
+    const esc = h('input', { type: 'number', value: settings.escalate_seconds });
+    const nr = h('input', { type: 'number', value: settings.no_response_seconds });
+    const sy = h('input', { value: settings.school_year_end, placeholder: 'MM-TT' });
+    out.append(h('div', { class: 'card' },
+      h('h2', {}, 'Einstellungen'),
+      h('label', {}, 'Gelb: an alle weiterleiten nach … Sekunden ohne Zusage'), esc,
+      h('label', {}, 'Hinweis „Durchsage oder Telefon“ nach … Sekunden ohne Zusage'), nr,
+      h('label', {}, 'Schuljahresende (MM-TT): Einsatzprotokolle davor werden gelöscht'), sy,
+      h('div', { style: 'margin-top:12px' }, h('button', {
+        class: 'btn',
+        onclick: guard(async () => {
+          await api('/settings', { method: 'PUT', body: { escalate_seconds: Number(esc.value), no_response_seconds: Number(nr.value), school_year_end: sy.value } });
+          toast('Gespeichert');
+        }),
+      }, 'Speichern'))));
+  }
+  return out;
+}
+
+// --- Konto -----------------------------------------------------------------------
+function viewAccount() {
+  const oldPw = h('input', { type: 'password', autocomplete: 'current-password' });
+  const newPw = h('input', { type: 'password', autocomplete: 'new-password' });
+  return h('div', {},
+    h('h1', {}, 'Konto'),
+    h('div', { class: 'card' },
+      h('p', {}, `${state.me.display_name} (${state.me.username}) · ${state.me.role_label}`),
+      h('h2', {}, 'Passwort ändern'),
+      h('label', {}, 'Altes Passwort'), oldPw,
+      h('label', {}, 'Neues Passwort (mind. 8 Zeichen)'), newPw,
+      h('div', { style: 'margin-top:12px' }, h('button', {
+        class: 'btn',
+        onclick: guard(async () => {
+          await api('/me/password', { method: 'PUT', body: { oldPassword: oldPw.value, newPassword: newPw.value } });
+          toast('Passwort geändert');
+          oldPw.value = '';
+          newPw.value = '';
+        }),
+      }, 'Ändern'))),
+    can('alarm.receive') ? pushCard() : null,
+    h('div', { class: 'card' }, h('button', {
+      class: 'btn secondary',
+      onclick: guard(async () => { await api('/logout', { method: 'POST' }); location.reload(); }),
+    }, 'Abmelden')));
+}
+
+boot();
