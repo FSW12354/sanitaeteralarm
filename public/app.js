@@ -69,42 +69,55 @@ const guard = (fn) => async (...args) => {
 };
 
 // --- Alarmton ---------------------------------------------------------------
-// Ein Ton läuft, solange ein offener Alarm auf dem Bildschirm steht.
+// Ein Ton läuft, solange ein offener Alarm auf dem Bildschirm steht. Jede Dringlichkeit klingt anders:
+// Rot schnell und hoch, Gelb zweitönig, Grün ruhig.
+const TONES = {
+  red: { every: 600, notes: [[988, 0.15], [740, 0.15]] },
+  yellow: { every: 1200, notes: [[784, 0.3], [587, 0.3]] },
+  green: { every: 2500, notes: [[523, 0.4]] },
+};
 let audio = null;
-function startSound() {
+
+// iOS spielt Ton nur aus einem Audiokontext, der bei einer Berührung angelegt oder fortgesetzt wurde.
+// Alarme kommen aber ohne Berührung an, deshalb wird der Kontext bei jeder Berührung vorbereitet.
+function unlockAudio() {
   try {
-    audio = audio || { ctx: new (window.AudioContext || window.webkitAudioContext)(), timer: null };
-    if (audio.timer) return;
-    audio.ctx.resume();
-    const beep = () => {
+    if (!audio) audio = { ctx: new (window.AudioContext || window.webkitAudioContext)(), timer: null, urgency: null };
+    if (audio.ctx.state !== 'running') audio.ctx.resume();
+  } catch { /* Ton ist nicht überall erlaubt */ }
+}
+for (const type of ['touchend', 'click', 'keydown']) document.addEventListener(type, unlockAudio, { passive: true });
+
+function startSound(urgency) {
+  unlockAudio();
+  if (!audio) return;
+  if (audio.timer && audio.urgency === urgency) return;
+  stopSound();
+  const tone = TONES[urgency] || TONES.red;
+  const beep = () => {
+    if (audio.ctx.state !== 'running') audio.ctx.resume();
+    let t = audio.ctx.currentTime;
+    for (const [freq, len] of tone.notes) {
       const o = audio.ctx.createOscillator();
       const g = audio.ctx.createGain();
       o.type = 'square';
-      o.frequency.value = 880;
+      o.frequency.value = freq;
       g.gain.value = 0.2;
       o.connect(g).connect(audio.ctx.destination);
-      o.start();
-      o.frequency.setValueAtTime(660, audio.ctx.currentTime + 0.25);
-      o.stop(audio.ctx.currentTime + 0.5);
-    };
-    beep();
-    audio.timer = setInterval(beep, 900);
-    navigator.vibrate?.([400, 200, 400]);
-  } catch { /* Ton ist nicht überall erlaubt */ }
+      o.start(t);
+      o.stop(t + len);
+      t += len;
+    }
+  };
+  beep();
+  audio.urgency = urgency;
+  audio.timer = setInterval(beep, tone.every);
+  navigator.vibrate?.([400, 200, 400]);
 }
 function stopSound() {
   if (audio?.timer) clearInterval(audio.timer);
   if (audio) audio.timer = null;
 }
-// iOS erlaubt Ton erst nach einer Berührung: Audio beim ersten Antippen freischalten.
-document.addEventListener('touchend', () => {
-  if (!audio) {
-    try {
-      audio = { ctx: new (window.AudioContext || window.webkitAudioContext)(), timer: null };
-      audio.ctx.resume();
-    } catch { /* ignorieren */ }
-  }
-}, { once: true });
 
 // --- Start ------------------------------------------------------------------
 async function boot() {
@@ -162,6 +175,8 @@ function tabsFor() {
 
 function renderShell() {
   document.getElementById('top').hidden = false;
+  // Gruppenführer erkennt man an zwei goldgelben Streifen hinter dem Schriftzug.
+  document.getElementById('top').classList.toggle('leader', state.me.role === 'leader');
   document.getElementById('who').replaceChildren(
     h('div', {}, state.me.display_name), h('div', {}, state.me.role_label),
   );
@@ -302,7 +317,7 @@ function checkIncoming() {
       h('button', { class: 'coming', onclick: reply('coming') }, 'Komme'),
       h('button', { class: 'decline', onclick: reply('declined') }, 'Kann nicht')),
   );
-  startSound();
+  startSound(a.urgency);
 }
 
 // --- Alarm senden -------------------------------------------------------------
