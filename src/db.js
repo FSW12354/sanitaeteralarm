@@ -23,6 +23,22 @@ const DEFAULT_INJURIES = [
   'Sonstiges',
 ];
 
+// Startraster; der Admin passt es an die Zeiten der Schule an.
+// Mindestbesetzung zum Start: Pausen 2 Personen, davon 1 Gruppenführer/in; Stunden ohne Vorgabe.
+const DEFAULT_PERIODS = [
+  ['1. Stunde', '07:45', '08:30', 'lesson'],
+  ['2. Stunde', '08:30', '09:15', 'lesson'],
+  ['1. große Pause', '09:15', '09:35', 'break'],
+  ['3. Stunde', '09:35', '10:20', 'lesson'],
+  ['4. Stunde', '10:20', '11:05', 'lesson'],
+  ['2. große Pause', '11:05', '11:20', 'break'],
+  ['5. Stunde', '11:20', '12:05', 'lesson'],
+  ['6. Stunde', '12:05', '12:50', 'lesson'],
+  ['Mittagspause', '12:50', '13:35', 'break'],
+  ['7. Stunde', '13:35', '14:20', 'lesson'],
+  ['8. Stunde', '14:20', '15:05', 'lesson'],
+];
+
 function open(file) {
   if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
@@ -102,12 +118,68 @@ function open(file) {
       created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS chat_by_alarm ON chat_messages (alarm_id, id);
+
+    -- Dienstplan nach Schulraster: Stunden und Pausen statt Uhrzeiten.
+    CREATE TABLE IF NOT EXISTS periods (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      start_time TEXT NOT NULL,
+      end_time TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('lesson', 'break')),
+      min_total INTEGER NOT NULL DEFAULT 1,
+      min_leaders INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS duty_assignments (
+      id INTEGER PRIMARY KEY,
+      weekday INTEGER NOT NULL CHECK (weekday BETWEEN 1 AND 7),
+      period_id INTEGER NOT NULL REFERENCES periods(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      UNIQUE (weekday, period_id, user_id)
+    );
+    CREATE TABLE IF NOT EXISTS absences (
+      id INTEGER PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      start_date TEXT NOT NULL,
+      end_date TEXT NOT NULL,
+      reason TEXT NOT NULL DEFAULT ''
+    );
+    CREATE TABLE IF NOT EXISTS holidays (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      start_date TEXT NOT NULL,
+      end_date TEXT NOT NULL
+    );
+    -- Ein Sanitäter gibt einen einzelnen Termin ab; wer ihn nimmt, steht in taken_by.
+    CREATE TABLE IF NOT EXISTS duty_offers (
+      id INTEGER PRIMARY KEY,
+      assignment_id INTEGER NOT NULL REFERENCES duty_assignments(id) ON DELETE CASCADE,
+      date TEXT NOT NULL,
+      taken_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL,
+      taken_at TEXT,
+      UNIQUE (assignment_id, date)
+    );
+    -- Einzelne zusätzliche Dienste, z. B. ein übernommener offener Dienst.
+    CREATE TABLE IF NOT EXISTS duty_extras (
+      id INTEGER PRIMARY KEY,
+      date TEXT NOT NULL,
+      period_id INTEGER NOT NULL REFERENCES periods(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      UNIQUE (date, period_id, user_id)
+    );
   `);
+  db.exec('DROP TABLE IF EXISTS duty_slots');
   migrateLeaderRole(db);
 
   if (db.prepare('SELECT COUNT(*) AS n FROM locations').get().n === 0) {
     const ins = db.prepare('INSERT INTO locations (building, name, sort) VALUES (?, ?, ?)');
     DEFAULT_LOCATIONS.forEach(([b, n], i) => ins.run(b, n, i));
+  }
+  if (db.prepare('SELECT COUNT(*) AS n FROM periods').get().n === 0) {
+    const ins = db.prepare('INSERT INTO periods (name, start_time, end_time, kind, min_total, min_leaders) VALUES (?, ?, ?, ?, ?, ?)');
+    for (const [name, start, end, kind] of DEFAULT_PERIODS) {
+      ins.run(name, start, end, kind, kind === 'break' ? 2 : 0, kind === 'break' ? 1 : 0);
+    }
   }
   if (db.prepare('SELECT COUNT(*) AS n FROM injury_types').get().n === 0) {
     const ins = db.prepare('INSERT INTO injury_types (name, sort) VALUES (?, ?)');

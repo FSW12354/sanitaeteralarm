@@ -1,21 +1,15 @@
 'use strict';
 const { can } = require('./auth');
 const { getSetting } = require('./db');
+const { createDutyService, dateStr } = require('./duty');
 
 const URGENCY_LABELS = { red: 'Rot, sofort', yellow: 'Gelb, dringend', green: 'Grün, nicht dringend' };
 
 // Werte aus dem Konzept; der Admin kann sie unter Einstellungen ändern.
-const DEFAULTS = { escalate_seconds: 60, no_response_seconds: 120, school_year_end: '07-31', chat_retention_days: 30 };
+const DEFAULTS = { escalate_seconds: 60, no_response_seconds: 120, school_year_end: '07-31', chat_retention_days: 30, reminder_time: '07:30' };
 
 function setting(db, key) {
   return getSetting(db, key, String(DEFAULTS[key]));
-}
-
-function weekdayAndTime(now) {
-  const day = now.getDay() === 0 ? 7 : now.getDay(); // 1 = Montag … 7 = Sonntag
-  const hh = String(now.getHours()).padStart(2, '0');
-  const mm = String(now.getMinutes()).padStart(2, '0');
-  return { day, time: `${hh}:${mm}` };
 }
 
 function receivers(db) {
@@ -23,24 +17,18 @@ function receivers(db) {
     .filter((u) => can(u, 'alarm.receive'));
 }
 
-function onDutyIds(db, now) {
-  const { day, time } = weekdayAndTime(now);
-  return new Set(db.prepare(
-    'SELECT user_id FROM duty_slots WHERE weekday = ? AND start_time <= ? AND end_time > ?',
-  ).all(day, time, time).map((r) => r.user_id));
-}
-
 // Wer bekommt den Alarm? Rot geht immer an alle verfügbaren Sanitäter,
 // Gelb und Grün an den Dienst. Ist niemand im Dienst, geht er an alle.
 function pickRecipients(db, scope, now) {
   const all = receivers(db);
   if (scope === 'all') return all;
-  const duty = onDutyIds(db, now);
+  const duty = createDutyService(db).onDutyIds(now);
   const onDuty = all.filter((u) => duty.has(u.id));
   return onDuty.length > 0 ? onDuty : all;
 }
 
 function createAlarmService(db, notifier, clock = () => new Date()) {
+  const dutyService = createDutyService(db);
   function load(id) {
     const alarm = db.prepare(`
       SELECT a.*, u.display_name AS sender_name FROM alarms a
@@ -149,6 +137,7 @@ function createAlarmService(db, notifier, clock = () => new Date()) {
       }
     }
     purgeOldAlarms(now);
+    for (const r of dutyService.dueReminders(now)) notifier.remind([r.userId], 'Sanitätsdienst', r.text);
   }
 
   // Einsatzprotokolle werden zum Schuljahresende gelöscht.
@@ -157,6 +146,11 @@ function createAlarmService(db, notifier, clock = () => new Date()) {
     let cutoff = new Date(now.getFullYear(), mm - 1, dd, 23, 59, 59);
     if (cutoff > now) cutoff = new Date(now.getFullYear() - 1, mm - 1, dd, 23, 59, 59);
     db.prepare('DELETE FROM alarms WHERE created_at <= ?').run(cutoff.toISOString());
+    // Abwesenheiten und einzelne Termine aus dem letzten Schuljahr werden ebenfalls gelöscht.
+    const cutoffDate = dateStr(cutoff);
+    db.prepare('DELETE FROM absences WHERE end_date <= ?').run(cutoffDate);
+    db.prepare('DELETE FROM duty_offers WHERE date <= ?').run(cutoffDate);
+    db.prepare('DELETE FROM duty_extras WHERE date <= ?').run(cutoffDate);
     // Der allgemeine Chat wird nach einer festen Zahl von Tagen gelöscht.
     const chatCutoff = new Date(now - Number(setting(db, 'chat_retention_days')) * 24 * 3600 * 1000);
     db.prepare('DELETE FROM chat_messages WHERE alarm_id IS NULL AND created_at <= ?').run(chatCutoff.toISOString());

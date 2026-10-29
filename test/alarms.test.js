@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const { setup } = require('./helpers');
 const { createAlarmService } = require('../src/alarms');
 
-// Mittwoch, 29.10.2026, 10:00 Uhr Ortszeit
+// Mittwoch, 28.10.2026, 10:00 Uhr Ortszeit
 const START = new Date(2026, 9, 28, 10, 0, 0);
 
 function scenario() {
@@ -15,8 +15,9 @@ function scenario() {
   const duty = s.addUser('lea', 'medic');
   const other = s.addUser('tom', 'medic');
   const away = s.addUser('mia', 'medic', { available: 0 });
-  s.database.prepare('INSERT INTO duty_slots (user_id, weekday, start_time, end_time) VALUES (?, 3, ?, ?)')
-    .run(duty.id, '09:00', '11:00');
+  // Mittwoch, 3. Stunde (09:35–10:20) laut Startraster
+  const period = s.database.prepare("SELECT id FROM periods WHERE name = '3. Stunde'").get();
+  s.database.prepare('INSERT INTO duty_assignments (weekday, period_id, user_id) VALUES (3, ?, ?)').run(period.id, duty.id);
   return { ...s, service, sender, duty, other, away, advance: (sec) => { now = new Date(now.getTime() + sec * 1000); } };
 }
 
@@ -83,7 +84,7 @@ test('Nach 2 Minuten ohne Zusage wird der Sender gewarnt', () => {
 
 test('Ohne Dienst geht der Alarm an alle verfügbaren', () => {
   const s = scenario();
-  s.advance(3 * 3600); // 13:00, niemand im Dienst
+  s.advance(3 * 3600); // 13:00, Mittagspause, niemand im Dienst
   const a = s.service.create({ sender: s.sender, ...base, urgency: 'green' });
   assert.equal(a.recipients.length, 2);
 });

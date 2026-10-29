@@ -56,7 +56,7 @@ test('Gruppenführer/in hat die Startrechte, aber keine Admin-Rechte', async (t)
   assert.ok(perms.includes('duty.manage'));
   assert.ok(!perms.includes('users.manage'));
   assert.equal((await gf('/users')).status, 403);
-  assert.equal((await gf('/duty')).status, 200);
+  assert.equal((await gf('/periods', { method: 'POST', body: { name: 'Frühaufsicht', start: '07:30', end: '07:45', kind: 'break' } })).status, 200);
 });
 
 test('Admin legt die Rechte der Gruppenführer fest', async (t) => {
@@ -70,7 +70,7 @@ test('Admin legt die Rechte der Gruppenführer fest', async (t) => {
   assert.equal(res.status, 200);
   const settings = (await admin('/settings')).data;
   assert.deepEqual(settings.leader_permissions, ['alarm.receive', 'chat.general'], 'Admin-Rechte und Unbekanntes werden verworfen');
-  assert.equal((await gf('/duty')).status, 403);
+  assert.equal((await gf('/duty/plan')).status, 403);
   assert.ok((await admin('/me')).data.permissions.includes('chat.moderate'), 'Admin behält alle Rechte');
 });
 

@@ -105,3 +105,12 @@ nav button.active .badge { background: #fff; color: var(--brand); }
 .chat-form { display: flex; gap: 8px; }
 .chat-form input { flex: 1; min-width: 0; }
 label.check { display: flex; align-items: center; gap: 8px; color: var(--ink); font-size: 15px; margin: 6px 0; }
+.segmented { display: flex; gap: 4px; flex-wrap: wrap; margin: 4px 0 12px; }
+.segmented button { flex: 1 1 auto; border: 1px solid var(--line); background: var(--card); color: var(--ink); border-radius: 10px; padding: 8px 10px; font-size: 14px; }
+.segmented button.active { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px 2px 10px; border-radius: 999px; background: var(--bg); border: 1px solid var(--line); font-size: 14px; }
+.chip button { border: 0; background: none; color: var(--muted); font-size: 16px; line-height: 1; padding: 2px 6px; }
+.raster-row { display: grid; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.raster-row:last-child { border-bottom: 0; }
+.raster-row label, .row label { margin: 0; }
