@@ -12,7 +12,7 @@ const state = {
   me: null, permissions: [], lists: { locations: [], injuries: [] }, alarms: new Map(),
   tab: null, ws: null, lastBeat: 0, draft: null, watching: null, handled: new Set(),
   chats: new Map(), unread: new Map(), drafts: {}, openChats: new Set(),
-  dutySection: 'plan', dutyWeekday: 1, dutyFrom: null,
+  dutySection: 'plan', dutyFrom: null,
 };
 const ROLE_NAMES = { medic: 'Sanitäter', leader: 'Gruppenführer/in', sender: 'Alarmierungssender', admin: 'Admin' };
 
@@ -542,7 +542,7 @@ const dayLabel = (iso) => {
   return new Date(y, m - 1, d).toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit' });
 };
 const periodLabel = (p) => `${p.name} · ${p.start_time}–${p.end_time}`;
-// Liegt ein Termin noch vor uns? Heute zählt bis zum Ende der Stunde oder Pause.
+// Liegt ein Termin noch vor uns? Heute zählt bis zum Ende der Dienstzeit.
 const upcoming = (date, period) => date > isoDate(new Date()) || (date === isoDate(new Date()) && period.end_time > nowTime());
 
 function slotStatus(slot) {
@@ -736,7 +736,7 @@ async function viewUsers() {
 }
 
 // --- Dienstplan (Gruppenführer und Admin) -------------------------------------------
-const DUTY_SECTIONS = [['plan', 'Übersicht'], ['week', 'Wochenplan'], ['raster', 'Schulraster'], ['absent', 'Abwesenheiten'], ['holidays', 'Ferien']];
+const DUTY_SECTIONS = [['plan', 'Übersicht'], ['week', 'Wochenplan'], ['raster', 'Dienstzeiten'], ['absent', 'Abwesenheiten'], ['holidays', 'Ferien']];
 
 async function viewDuty() {
   const section = state.dutySection;
@@ -785,46 +785,47 @@ async function dutyPlan() {
 
 async function dutyWeek() {
   const [periods, assignments, people] = await Promise.all([api('/periods'), api('/duty/assignments'), api('/duty/people')]);
-  const day = state.dutyWeekday;
-  const dayNav = h('div', { class: 'segmented' }, [1, 2, 3, 4, 5].map((d) => h('button', {
-    class: d === day ? 'active' : '', onclick: () => { state.dutyWeekday = d; render(); },
-  }, WEEKDAYS[d].slice(0, 2))));
+  const one = periods.length === 1;
+  const slot = (day, p) => {
+    const here = assignments.filter((a) => a.weekday === day && a.period_id === p.id);
+    const select = h('select', { 'aria-label': `Sanitäter für ${WEEKDAYS[day]} eintragen` }, h('option', { value: '' }, '+ Sanitäter eintragen'),
+      people.filter((u) => !here.some((a) => a.user_id === u.id)).map((u) => h('option', { value: u.id }, `${u.display_name} (${u.role_label})`)));
+    select.addEventListener('change', guard(async () => {
+      if (!select.value) return;
+      await api('/duty/assignments', { method: 'POST', body: { weekday: day, periodId: p.id, userId: Number(select.value) } });
+      render();
+    }));
+    const missing = Math.max(0, p.min_total - here.length);
+    return h('div', { class: 'week-slot' },
+      h('div', {},
+        one ? null : h('strong', {}, `${p.name} `),
+        h('span', { class: 'muted' }, `${p.start_time}–${p.end_time} · mind. ${p.min_total}${p.min_leaders ? `, davon ${p.min_leaders} GF` : ''} `),
+        missing ? pill('red', `Fehlt ${missing}`) : pill('green', 'Besetzt')),
+      h('div', { class: 'chips' }, here.map((a) => h('span', { class: 'chip' }, a.display_name, h('button', {
+        title: 'Austragen', onclick: guard(async () => { await api(`/duty/assignments/${a.id}`, { method: 'DELETE' }); render(); }),
+      }, '×')))),
+      select);
+  };
   return h('div', {},
     h('p', { class: 'hint' }, 'Regelmäßige Dienste, gelten jede Woche. Einzelne Termine geben Sanitäter selbst ab oder übernehmen sie.'),
-    dayNav,
-    h('div', { class: 'card' }, periods.map((p) => {
-      const here = assignments.filter((a) => a.weekday === day && a.period_id === p.id);
-      const select = h('select', {}, h('option', { value: '' }, '+ eintragen'),
-        people.filter((u) => !here.some((a) => a.user_id === u.id)).map((u) => h('option', { value: u.id }, `${u.display_name} (${u.role_label})`)));
-      select.addEventListener('change', guard(async () => {
-        if (!select.value) return;
-        await api('/duty/assignments', { method: 'POST', body: { weekday: day, periodId: p.id, userId: Number(select.value) } });
-        render();
-      }));
-      return h('div', { class: 'list-item' },
-        h('div', {},
-          h('strong', {}, p.name), h('span', { class: 'muted' }, ` ${p.start_time}–${p.end_time} · mind. ${p.min_total}${p.min_leaders ? `, davon ${p.min_leaders} GF` : ''}`),
-          h('div', { class: 'chips' }, here.map((a) => h('span', { class: 'chip' }, a.display_name, h('button', {
-            title: 'Austragen', onclick: guard(async () => { await api(`/duty/assignments/${a.id}`, { method: 'DELETE' }); render(); }),
-          }, '×'))))),
-        select);
-    })));
+    [1, 2, 3, 4, 5].map((day) => h('div', { class: 'card' },
+      h('h2', { style: 'margin-top:0' }, WEEKDAYS[day]),
+      periods.map((p) => slot(day, p)))));
 }
 
 async function dutyRaster() {
   const periods = await api('/periods');
   const row = (p) => {
     const f = {
-      name: h('input', { value: p?.name ?? '', placeholder: 'z. B. 1. große Pause' }),
+      name: h('input', { value: p?.name ?? '', placeholder: 'z. B. Tagesdienst' }),
       start: h('input', { type: 'time', value: p?.start_time ?? '' }),
       end: h('input', { type: 'time', value: p?.end_time ?? '' }),
-      kind: h('select', {}, h('option', { value: 'lesson', selected: p?.kind === 'lesson' }, 'Stunde'), h('option', { value: 'break', selected: p?.kind === 'break' }, 'Pause')),
-      min: h('input', { type: 'number', min: 0, max: 20, value: p?.min_total ?? 1 }),
+      min: h('input', { type: 'number', min: 0, max: 20, value: p?.min_total ?? 2 }),
       gf: h('input', { type: 'number', min: 0, max: 20, value: p?.min_leaders ?? 0 }),
     };
-    const body = () => ({ name: f.name.value, start: f.start.value, end: f.end.value, kind: f.kind.value, minTotal: Number(f.min.value), minLeaders: Number(f.gf.value) });
+    const body = () => ({ name: f.name.value, start: f.start.value, end: f.end.value, minTotal: Number(f.min.value), minLeaders: Number(f.gf.value) });
     return h('div', { class: 'raster-row' },
-      f.name, h('div', { class: 'row' }, h('label', {}, 'Beginn', f.start), h('label', {}, 'Ende', f.end), h('label', {}, 'Art', f.kind)),
+      f.name, h('div', { class: 'row' }, h('label', {}, 'Beginn', f.start), h('label', {}, 'Ende', f.end)),
       h('div', { class: 'row' }, h('label', {}, 'mind. Personen', f.min), h('label', {}, 'davon Gruppenführer', f.gf)),
       h('div', { class: 'row' },
         h('button', {
@@ -845,9 +846,9 @@ async function dutyRaster() {
         }, 'Löschen') : null));
   };
   return h('div', {},
-    h('p', { class: 'hint' }, 'Stunden und Pausen eurer Schule mit der Mindestbesetzung. Gilt für alle Wochentage.'),
+    h('p', { class: 'hint' }, 'Wann Dienst ist und wie viele mindestens dabei sein müssen. Gilt für alle Schultage. Normalerweise reicht ein Tagesdienst; weitere Zeiten nur, wenn ihr sie braucht.'),
     h('div', { class: 'card' }, periods.map(row)),
-    h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Neue Stunde oder Pause'), row(null)));
+    h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Weitere Dienstzeit'), row(null)));
 }
 
 async function dutyAbsences() {

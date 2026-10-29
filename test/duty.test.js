@@ -50,7 +50,9 @@ test('Mindestbesetzung zeigt Lücken', async (t) => {
   const s = await start();
   t.after(s.close);
   const gf = await s.login('gf');
-  const pause = s.period('1. große Pause'); // Start: 2 Personen, davon 1 Gruppenführer
+  const pause = s.period('Tagesdienst'); // Start: 08:00–14:30, mindestens 2 Personen
+  assert.deepEqual([pause.start_time, pause.end_time, pause.min_total, pause.min_leaders], ['08:00', '14:30', 2, 0]);
+  assert.equal((await gf(`/periods/${pause.id}`, { method: 'PUT', body: { minLeaders: 1 } })).status, 200);
   await gf('/duty/assignments', { method: 'POST', body: { weekday: 3, periodId: pause.id, userId: s.users.lea.id } });
   let slot = slotOf((await gf(`/duty/plan?from=${WED}&days=1`)).data, WED, pause.id);
   assert.equal(slot.people.length, 1);
@@ -81,7 +83,7 @@ test('Abwesenheit nimmt aus dem Dienst und aus der Alarmierung', async (t) => {
   t.after(s.close);
   const gf = await s.login('gf');
   const lea = await s.login('lea');
-  const first = s.period('1. Stunde'); // 07:45–08:30
+  const first = s.period('Tagesdienst');
   await gf('/duty/assignments', { method: 'POST', body: { weekday: 3, periodId: first.id, userId: s.users.lea.id } });
   assert.deepEqual([...s.duty.onDutyIds(now)], [s.users.lea.id]);
   assert.equal((await lea('/absences', { method: 'POST', body: { start: WED, end: WED, reason: 'Klassenfahrt', userId: s.users.tom.id } })).status, 403);
@@ -98,7 +100,7 @@ test('Ferien: kein Dienst, Alarm geht an alle', async (t) => {
   const s = await start();
   t.after(s.close);
   const gf = await s.login('gf');
-  const first = s.period('1. Stunde');
+  const first = s.period('Tagesdienst');
   await gf('/duty/assignments', { method: 'POST', body: { weekday: 3, periodId: first.id, userId: s.users.lea.id } });
   await gf('/holidays', { method: 'POST', body: { name: 'Herbstferien', start: '2026-10-26', end: '2026-10-30' } });
   const [day] = (await gf(`/duty/plan?from=${WED}&days=1`)).data;
@@ -114,7 +116,7 @@ test('Diensttausch: Termin abgeben und übernehmen', async (t) => {
   const gf = await s.login('gf');
   const lea = await s.login('lea');
   const tom = await s.login('tom');
-  const first = s.period('1. Stunde');
+  const first = s.period('Tagesdienst');
   const { data: { id: assignmentId } } = await gf('/duty/assignments', { method: 'POST', body: { weekday: 3, periodId: first.id, userId: s.users.lea.id } });
   assert.equal((await tom('/duty/offers', { method: 'POST', body: { assignmentId, date: NEXT_WED } })).status, 403, 'fremder Dienst');
   assert.equal((await lea('/duty/offers', { method: 'POST', body: { assignmentId, date: '2026-11-05' } })).status, 400, 'falscher Wochentag');
@@ -141,7 +143,7 @@ test('Offenen Dienst übernehmen', async (t) => {
   t.after(s.close);
   const tom = await s.login('tom');
   const gf = await s.login('gf');
-  const pause = s.period('1. große Pause');
+  const pause = s.period('Tagesdienst');
   const { status, data } = await tom('/duty/extras', { method: 'POST', body: { date: WED, periodId: pause.id } });
   assert.equal(status, 200);
   assert.equal((await tom('/duty/extras', { method: 'POST', body: { date: WED, periodId: pause.id } })).status, 400, 'doppelt');
@@ -157,8 +159,7 @@ test('Erinnerung am Morgen, einmal pro Tag', async (t) => {
   const s = await start();
   t.after(s.close);
   const gf = await s.login('gf');
-  await gf('/duty/assignments', { method: 'POST', body: { weekday: 3, periodId: s.period('1. große Pause').id, userId: s.users.lea.id } });
-  await gf('/duty/assignments', { method: 'POST', body: { weekday: 3, periodId: s.period('Mittagspause').id, userId: s.users.lea.id } });
+  await gf('/duty/assignments', { method: 'POST', body: { weekday: 3, periodId: s.period('Tagesdienst').id, userId: s.users.lea.id } });
   now = new Date(2026, 9, 28, 7, 29);
   s.alarms.tick();
   assert.equal(s.calls.remind.length, 0);
@@ -167,5 +168,33 @@ test('Erinnerung am Morgen, einmal pro Tag', async (t) => {
   s.alarms.tick();
   assert.equal(s.calls.remind.length, 1);
   assert.deepEqual(s.calls.remind[0].ids, [s.users.lea.id]);
-  assert.equal(s.calls.remind[0].body, 'Heute Dienst: 1. große Pause (09:15–09:35), Mittagspause (12:50–13:35)');
+  assert.equal(s.calls.remind[0].body, 'Heute Dienst: Tagesdienst (08:00–14:30)');
+});
+
+test('Altes Startraster wird durch den Tagesdienst ersetzt, solange niemand eingeteilt ist', () => {
+  const { open } = require('../src/db');
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'sani-')), 'test.db');
+  const old = ['1. Stunde', '2. Stunde', '1. große Pause', '3. Stunde', '4. Stunde', '2. große Pause',
+    '5. Stunde', '6. Stunde', 'Mittagspause', '7. Stunde', '8. Stunde'];
+  const seed = (db) => {
+    db.exec('DELETE FROM periods');
+    old.forEach((n, i) => db.prepare("INSERT INTO periods (name, start_time, end_time, kind) VALUES (?, ?, ?, 'lesson')")
+      .run(n, `${String(7 + i).padStart(2, '0')}:00`, `${String(7 + i).padStart(2, '0')}:45`));
+  };
+  let db = open(file);
+  seed(db);
+  db.close();
+  db = open(file);
+  assert.deepEqual(db.prepare('SELECT name FROM periods').all().map((r) => r.name), ['Tagesdienst']);
+  // Mit Einteilung bleibt das Raster, wie es ist.
+  seed(db);
+  db.prepare('INSERT INTO users (username, display_name, role, pw_hash) VALUES (?, ?, ?, ?)').run('x', 'x', 'medic', 'x');
+  db.prepare('INSERT INTO duty_assignments (weekday, period_id, user_id) VALUES (1, (SELECT MIN(id) FROM periods), 1)').run();
+  db.close();
+  db = open(file);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM periods').get().n, 11);
+  db.close();
 });

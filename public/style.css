@@ -114,3 +114,6 @@ label.check { display: flex; align-items: center; gap: 8px; color: var(--ink); f
 .raster-row { display: grid; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--line); }
 .raster-row:last-child { border-bottom: 0; }
 .raster-row label, .row label { margin: 0; }
+.week-slot { display: grid; gap: 8px; padding: 8px 0; }
+.week-slot + .week-slot { border-top: 1px solid var(--line); }
+.week-slot select { width: 100%; }

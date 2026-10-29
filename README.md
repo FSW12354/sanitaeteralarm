@@ -30,13 +30,13 @@ Alarmregeln (Zeiten in den Einstellungen änderbar):
 
 Dienstplan:
 
-- **Schulraster**: Stunden und Pausen mit Uhrzeit und Mindestbesetzung (Start: Pausen 2 Personen, davon 1 Gruppenführer/in; Stunden ohne Vorgabe). Dienste werden pro Wochentag im Raster eingeteilt.
+- **Tagesdienst**: jeden Schultag (Mo–Fr) von 08:00 bis 14:30 Uhr, mindestens 2 Sanitäter. Im **Wochenplan** wählt der Dienstplaner pro Wochentag die Sanitäter aus einem Auswahlmenü. Unter **Dienstzeiten** lassen sich Uhrzeit und Mindestbesetzung ändern oder weitere Zeiten anlegen.
 - **Abwesenheiten** (Klassenfahrt, Praktikum, Krankheit) tragen Sanitäter selbst ein; Dienstplaner auch für andere. Abwesende haben keinen Dienst, die Lücke wird sichtbar.
 - **Ferien**: kein Dienst; Alarme gehen dann an alle verfügbaren Sanitäter.
 - **Diensttausch**: Sanitäter geben einen einzelnen Termin ab, ein anderer übernimmt ihn. Bis dahin bleibt der Termin beim Abgebenden. Dienstplaner werden informiert.
 - **Offene Dienste**: unterbesetzte oder abgegebene Termine der nächsten zwei Wochen; mit „Übernehmen“ trägt man sich ein.
 - **Erinnerung**: An Schultagen um 07:30 Uhr (einstellbar) eine Mitteilung an alle, die heute Dienst haben.
-- „Im Dienst“ für die Alarmierung heißt: zur aktuellen Uhrzeit im Raster eingeteilt, nicht abwesend, kein Ferientag.
+- „Im Dienst“ für die Alarmierung heißt: zur aktuellen Uhrzeit eingeteilt, nicht abwesend, kein Ferientag.
 
 Rechte sind intern einzelne Berechtigungen (`src/auth.js`). Der Admin hat immer alle Rechte, auch künftige.
 
