@@ -11,7 +11,9 @@ const URGENCIES = [
 const state = {
   me: null, permissions: [], lists: { locations: [], injuries: [] }, alarms: new Map(),
   tab: null, ws: null, lastBeat: 0, draft: null, watching: null, handled: new Set(),
+  chats: new Map(), unread: new Map(), drafts: {}, openChats: new Set(),
 };
+const ROLE_NAMES = { medic: 'Sanitäter', leader: 'Gruppenführer/in', sender: 'Alarmierungssender', admin: 'Admin' };
 
 // --- Hilfsfunktionen --------------------------------------------------------
 function h(tag, attrs = {}, ...children) {
@@ -147,6 +149,7 @@ function tabsFor() {
   const tabs = [];
   if (can('alarm.send')) tabs.push(['send', 'Alarm senden']);
   tabs.push(['alarms', 'Alarme']);
+  if (can('chat.general')) tabs.push(['chat', 'Chat']);
   if (can('duty.view_own')) tabs.push(['mine', 'Mein Dienst']);
   if (can('users.manage')) tabs.push(['users', 'Benutzer']);
   if (can('duty.manage')) tabs.push(['duty', 'Dienstplan']);
@@ -163,26 +166,48 @@ function renderShell() {
   );
   const tabs = tabsFor();
   if (!state.tab) state.tab = tabs[0][0];
+  render();
+  renderNav();
+}
+
+function unreadFor(tab) {
+  let n = 0;
+  for (const [key, count] of state.unread) {
+    if (tab === 'chat' ? key === 'general' : key !== 'general' && state.alarms.has(key)) n += count;
+  }
+  return n;
+}
+
+function renderNav() {
   const nav = document.getElementById('tabs');
   nav.hidden = false;
-  nav.replaceChildren(...tabs.map(([key, label]) => h('button', {
-    class: state.tab === key ? 'active' : '',
-    onclick: () => { state.tab = key; state.watching = null; renderShell(); },
-  }, label)));
-  render();
+  nav.replaceChildren(...tabsFor().map(([key, label]) => {
+    const n = ['chat', 'alarms'].includes(key) ? unreadFor(key) : 0;
+    return h('button', {
+      class: state.tab === key ? 'active' : '',
+      onclick: () => { state.tab = key; state.watching = null; renderShell(); },
+    }, label, n ? h('span', { class: 'badge' }, n) : null);
+  }));
 }
 
 function render() {
   const main = document.getElementById('main');
+  // Ein Chat-Eingabefeld behält beim Neuzeichnen Text und Fokus.
+  const focusKey = document.activeElement?.dataset?.draft;
+  const show = (el) => {
+    main.replaceChildren(el);
+    if (focusKey) main.querySelector(`[data-draft="${focusKey}"]`)?.focus();
+    scrollChats();
+  };
   const views = {
-    send: viewSend, alarms: viewAlarms, mine: viewMine, users: viewUsers,
+    send: viewSend, alarms: viewAlarms, chat: viewChat, mine: viewMine, users: viewUsers,
     duty: viewDuty, lists: viewLists, admin: viewAdmin, account: viewAccount,
   };
   const out = (views[state.tab] || viewAlarms)();
   if (out instanceof Promise) {
-    out.then((el) => main.replaceChildren(el)).catch((err) => toast(err.message));
+    out.then(show).catch((err) => toast(err.message));
   } else {
-    main.replaceChildren(out);
+    show(out);
   }
 }
 
@@ -195,6 +220,7 @@ function connect() {
     const msg = JSON.parse(ev.data);
     state.lastBeat = Date.now();
     if (msg.type === 'heartbeat') return;
+    if (msg.type === 'chat' || msg.type === 'chat_delete') return onChat(msg);
     const a = msg.alarm;
     if (a.ended_at) state.alarms.delete(a.id);
     else state.alarms.set(a.id, a);
@@ -350,6 +376,89 @@ function viewAlarmStatus(id) {
     h('button', { class: 'btn secondary', onclick: () => { state.watching = null; render(); } }, 'Weiteren Alarm senden'));
 }
 
+// --- Chat ---------------------------------------------------------------------
+// Schlüssel: 'general' für den allgemeinen Chat, sonst die Alarm-ID.
+const chatPath = (key) => (key === 'general' ? '/chat/general' : `/alarms/${key}/chat`);
+
+function chatVisible(key) {
+  if (document.visibilityState === 'hidden') return false;
+  if (key === 'general') return state.tab === 'chat';
+  return state.openChats.has(key) && ['alarms', 'send'].includes(state.tab);
+}
+
+function onChat(msg) {
+  const key = msg.alarm_id ?? msg.message?.alarm_id ?? 'general';
+  const list = state.chats.get(key);
+  if (msg.type === 'chat_delete') {
+    if (list) state.chats.set(key, list.filter((m) => m.id !== msg.id));
+  } else {
+    if (list && !list.some((m) => m.id === msg.message.id)) list.push(msg.message);
+    if (msg.message.user_id !== state.me.id && !chatVisible(key)) {
+      state.unread.set(key, (state.unread.get(key) || 0) + 1);
+    }
+  }
+  drawChat(key);
+  renderNav();
+}
+
+async function loadChat(key) {
+  state.chats.set(key, await api(chatPath(key)));
+  drawChat(key);
+}
+
+function scrollChats() {
+  for (const el of document.getElementById('main').querySelectorAll('[data-chat]')) el.scrollTop = el.scrollHeight;
+}
+
+function drawChat(key) {
+  const messages = state.chats.get(key);
+  for (const el of document.getElementById('main').querySelectorAll(`[data-chat="${key}"]`)) {
+    el.replaceChildren(...(messages === undefined ? [h('p', { class: 'hint' }, 'Lädt …')]
+      : messages.length === 0 ? [h('p', { class: 'hint' }, 'Noch keine Nachrichten.')]
+        : messages.map((m) => h('div', { class: m.user_id === state.me.id ? 'msg own' : 'msg' },
+          h('div', { class: 'msg-head' },
+            h('strong', {}, m.display_name || 'Gelöschter Benutzer'),
+            m.role_label ? h('span', { class: 'muted' }, ` · ${m.role_label}`) : null,
+            h('span', { class: 'muted' }, ` · ${time(m.created_at)}`),
+            can('chat.moderate') ? h('button', {
+              class: 'msg-del', title: 'Nachricht löschen',
+              onclick: guard(async () => { await api(`/chat/${m.id}`, { method: 'DELETE' }); }),
+            }, 'Löschen') : null),
+          h('div', { class: 'msg-body' }, m.body)))));
+    el.scrollTop = el.scrollHeight;
+  }
+}
+
+function chatPanel(key, { canPost = true } = {}) {
+  state.unread.delete(key);
+  if (!state.chats.has(key)) loadChat(key).catch((err) => toast(err.message));
+  const list = h('div', { class: 'chat-list', 'data-chat': key });
+  const input = h('input', {
+    'data-draft': String(key), value: state.drafts[key] || '', maxlength: 1000,
+    placeholder: 'Nachricht schreiben', oninput: (e) => { state.drafts[key] = e.target.value; },
+  });
+  const panel = h('div', { class: 'chat' }, list,
+    canPost ? h('form', {
+      class: 'chat-form',
+      onsubmit: guard(async (e) => {
+        e.preventDefault();
+        if (!input.value.trim()) return;
+        await api(chatPath(key), { method: 'POST', body: { body: input.value } });
+        state.drafts[key] = '';
+        input.value = '';
+      }),
+    }, input, h('button', { class: 'btn small', type: 'submit' }, 'Senden')) : h('p', { class: 'hint' }, 'Der Einsatz ist beendet.'),
+    canPost ? h('p', { class: 'hint' }, 'Keine Namen oder Gesundheitsdaten von Verletzten schreiben.') : null);
+  queueMicrotask(() => drawChat(key));
+  return panel;
+}
+
+function viewChat() {
+  return h('div', {}, h('h1', {}, 'Chat'),
+    h('p', { class: 'hint' }, 'Für alle im Sanitätsdienst. Nachrichten werden nach einer festen Frist automatisch gelöscht.'),
+    chatPanel('general'));
+}
+
 // --- Alarmliste ---------------------------------------------------------------
 function alarmCard(a, detailed = false) {
   const coming = a.recipients.filter((r) => r.response === 'coming');
@@ -376,6 +485,18 @@ function alarmCard(a, detailed = false) {
       h('div', {}, h('strong', {}, `Noch keine Antwort (${waiting.length}): `), waiting.map((r) => r.display_name).join(', ') || '–'),
     ] : null,
     a.recipients.length === 0 ? h('div', { class: 'banner danger' }, 'Kein Sanitäter ist verfügbar! Bitte per Durchsage oder Telefon alarmieren.') : null,
+    h('div', { style: 'margin-top:12px' },
+      h('button', {
+        class: 'btn secondary small',
+        onclick: () => {
+          if (state.openChats.has(a.id)) state.openChats.delete(a.id);
+          else state.openChats.add(a.id);
+          render();
+          renderNav();
+        },
+      }, state.openChats.has(a.id) ? 'Einsatzchat schließen' : 'Einsatzchat',
+      state.unread.get(a.id) && !state.openChats.has(a.id) ? h('span', { class: 'badge' }, state.unread.get(a.id)) : null),
+      state.openChats.has(a.id) ? chatPanel(a.id, { canPost: !a.ended_at }) : null),
     h('div', { class: 'row', style: 'margin-top:12px' },
       mine && !a.ended_at ? h('button', {
         class: 'btn secondary small',
@@ -478,7 +599,7 @@ async function viewUsers() {
     displayName: h('input', { placeholder: 'Name, z. B. Lea M.' }),
     username: h('input', { placeholder: 'Benutzername', autocapitalize: 'none' }),
     password: h('input', { placeholder: 'Startpasswort (mind. 8 Zeichen)' }),
-    role: h('select', {}, h('option', { value: 'medic' }, 'Sanitäter'), h('option', { value: 'sender' }, 'Alarmierungssender'), h('option', { value: 'admin' }, 'Admin')),
+    role: h('select', {}, Object.entries(ROLE_NAMES).map(([value, label]) => h('option', { value }, label))),
     loc: h('select', {}, h('option', { value: '' }, 'Standort (nur feste Sender-Geräte)'), locs.map((l) => h('option', { value: l.id }, `${l.building} – ${l.name}`))),
   };
   return h('div', {},
@@ -490,7 +611,7 @@ async function viewUsers() {
       h('div', { class: 'row', style: 'flex:none' },
         h('select', {
           onchange: guard(async (e) => { await api(`/users/${u.id}`, { method: 'PUT', body: { role: e.target.value } }); render(); }),
-        }, ['medic', 'sender', 'admin'].map((r) => h('option', { value: r, selected: u.role === r }, { medic: 'Sanitäter', sender: 'Sender', admin: 'Admin' }[r]))),
+        }, Object.entries(ROLE_NAMES).map(([r, label]) => h('option', { value: r, selected: u.role === r }, label))),
         h('button', {
           class: 'btn secondary small',
           onclick: guard(async () => {
@@ -622,18 +743,43 @@ async function viewAdmin() {
     const esc = h('input', { type: 'number', value: settings.escalate_seconds });
     const nr = h('input', { type: 'number', value: settings.no_response_seconds });
     const sy = h('input', { value: settings.school_year_end, placeholder: 'MM-TT' });
+    const cr = h('input', { type: 'number', value: settings.chat_retention_days });
     out.append(h('div', { class: 'card' },
       h('h2', {}, 'Einstellungen'),
       h('label', {}, 'Gelb: an alle weiterleiten nach … Sekunden ohne Zusage'), esc,
       h('label', {}, 'Hinweis „Durchsage oder Telefon“ nach … Sekunden ohne Zusage'), nr,
       h('label', {}, 'Schuljahresende (MM-TT): Einsatzprotokolle davor werden gelöscht'), sy,
+      h('label', {}, 'Allgemeinen Chat löschen nach … Tagen'), cr,
       h('div', { style: 'margin-top:12px' }, h('button', {
         class: 'btn',
         onclick: guard(async () => {
-          await api('/settings', { method: 'PUT', body: { escalate_seconds: Number(esc.value), no_response_seconds: Number(nr.value), school_year_end: sy.value } });
+          await api('/settings', {
+            method: 'PUT',
+            body: { escalate_seconds: Number(esc.value), no_response_seconds: Number(nr.value), school_year_end: sy.value, chat_retention_days: Number(cr.value) },
+          });
           toast('Gespeichert');
         }),
       }, 'Speichern'))));
+
+    // Rechte der Gruppenführer/innen: Der Admin entscheidet, was diese Ebene darf.
+    const boxes = Object.entries(settings.permission_labels)
+      .filter(([p]) => !settings.admin_only.includes(p))
+      .map(([p, label]) => {
+        const box = h('input', { type: 'checkbox', value: p, checked: settings.leader_permissions.includes(p), style: 'width:auto' });
+        return [box, h('label', { class: 'check' }, box, ` ${label}`)];
+      });
+    out.append(h('div', { class: 'card' },
+      h('h2', {}, 'Rechte der Gruppenführer/innen'),
+      h('p', { class: 'hint' }, 'Benutzer verwalten und Systemeinstellungen bleiben dem Admin vorbehalten.'),
+      boxes.map(([, label]) => label),
+      h('div', { style: 'margin-top:12px' }, h('button', {
+        class: 'btn',
+        onclick: guard(async () => {
+          const leader_permissions = boxes.filter(([box]) => box.checked).map(([box]) => box.value);
+          await api('/settings', { method: 'PUT', body: { leader_permissions } });
+          toast('Rechte gespeichert');
+        }),
+      }, 'Rechte speichern'))));
   }
   return out;
 }

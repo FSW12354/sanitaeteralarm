@@ -33,7 +33,7 @@ function open(file) {
       username TEXT NOT NULL UNIQUE COLLATE NOCASE,
       display_name TEXT NOT NULL,
       pw_hash TEXT NOT NULL,
-      role TEXT NOT NULL CHECK (role IN ('medic', 'sender', 'admin')),
+      role TEXT NOT NULL CHECK (role IN ('medic', 'leader', 'sender', 'admin')),
       available INTEGER NOT NULL DEFAULT 1,
       default_location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL,
       disabled INTEGER NOT NULL DEFAULT 0
@@ -94,7 +94,16 @@ function open(file) {
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS chat_messages (
+      id INTEGER PRIMARY KEY,
+      alarm_id INTEGER REFERENCES alarms(id) ON DELETE CASCADE, -- NULL = allgemeiner Chat
+      user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      body TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS chat_by_alarm ON chat_messages (alarm_id, id);
   `);
+  migrateLeaderRole(db);
 
   if (db.prepare('SELECT COUNT(*) AS n FROM locations').get().n === 0) {
     const ins = db.prepare('INSERT INTO locations (building, name, sort) VALUES (?, ?, ?)');
@@ -105,6 +114,32 @@ function open(file) {
     DEFAULT_INJURIES.forEach((n, i) => ins.run(n, i));
   }
   return db;
+}
+
+// Datenbanken aus dem Prototyp kennen die Rolle Gruppenführer/in noch nicht.
+// SQLite kann eine CHECK-Bedingung nicht ändern, deshalb wird die Tabelle neu angelegt.
+function migrateLeaderRole(db) {
+  const { sql } = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'").get();
+  if (sql.includes("'leader'")) return;
+  db.exec('PRAGMA foreign_keys = OFF');
+  try {
+    db.exec('BEGIN');
+    // Reihenfolge nach https://www.sqlite.org/lang_altertable.html#otheralter,
+    // damit die Fremdschlüssel anderer Tabellen weiter auf "users" zeigen.
+    const newSql = sql
+      .replace("('medic', 'sender', 'admin')", "('medic', 'leader', 'sender', 'admin')")
+      .replace(/^CREATE TABLE "?users"?/, 'CREATE TABLE users_new');
+    db.exec(`${newSql};
+      INSERT INTO users_new SELECT * FROM users;
+      DROP TABLE users;
+      ALTER TABLE users_new RENAME TO users;`);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  } finally {
+    db.exec('PRAGMA foreign_keys = ON');
+  }
 }
 
 function getSetting(db, key, fallback = null) {

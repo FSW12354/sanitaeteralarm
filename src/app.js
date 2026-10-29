@@ -35,6 +35,9 @@ function publicUser(u) {
 
 function createApp({ db, notifier, secureCookies = false, clock }) {
   const alarms = createAlarmService(db, notifier, clock);
+  const now = clock || (() => new Date());
+  const storedLeader = getSetting(db, 'leader_permissions');
+  if (storedLeader) auth.setLeaderPermissions(JSON.parse(storedLeader));
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json({ limit: '50kb' }));
@@ -303,23 +306,91 @@ function createApp({ db, notifier, secureCookies = false, clock }) {
   });
 
   const SETTING_KEYS = Object.keys(DEFAULTS);
-  app.get('/api/settings', need('settings.manage'), wrap(() => Object.fromEntries(
-    SETTING_KEYS.map((k) => [k, getSetting(db, k, String(DEFAULTS[k]))]),
-  )));
+  app.get('/api/settings', need('settings.manage'), wrap(() => ({
+    ...Object.fromEntries(SETTING_KEYS.map((k) => [k, getSetting(db, k, String(DEFAULTS[k]))])),
+    leader_permissions: auth.permissionsOf({ role: 'leader' }),
+    permission_labels: auth.PERMISSIONS,
+    admin_only: auth.ADMIN_ONLY,
+  })));
 
   app.put('/api/settings', need('settings.manage'), wrap((req) => {
     const b = req.body || {};
+    const updates = [];
     for (const k of ['escalate_seconds', 'no_response_seconds']) {
       if (b[k] !== undefined) {
         const n = Number(b[k]);
         if (!Number.isInteger(n) || n < 10 || n > 3600) throw new HttpError(400, 'Zeiten zwischen 10 und 3600 Sekunden');
-        setSetting(db, k, n);
+        updates.push([k, n]);
       }
+    }
+    if (b.chat_retention_days !== undefined) {
+      const n = Number(b.chat_retention_days);
+      if (!Number.isInteger(n) || n < 1 || n > 365) throw new HttpError(400, 'Chat-Löschfrist zwischen 1 und 365 Tagen');
+      updates.push(['chat_retention_days', n]);
     }
     if (b.school_year_end !== undefined) {
       if (!/^(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(b.school_year_end)) throw new HttpError(400, 'Datum als MM-TT angeben');
-      setSetting(db, 'school_year_end', b.school_year_end);
+      updates.push(['school_year_end', b.school_year_end]);
     }
+    if (b.leader_permissions !== undefined) {
+      if (!Array.isArray(b.leader_permissions)) throw new HttpError(400, 'Ungültige Rechteliste');
+      updates.push(['leader_permissions', JSON.stringify(auth.setLeaderPermissions(b.leader_permissions))]);
+    }
+    for (const [k, v] of updates) setSetting(db, k, v);
+    return { ok: true };
+  }));
+
+  // --- Chat ------------------------------------------------------------------
+  // Einsatzchat gehört zu einem Alarm, allgemeiner Chat hat alarm_id NULL.
+  function chatMessages(alarmId) {
+    const where = alarmId === null ? 'm.alarm_id IS NULL' : 'm.alarm_id = ?';
+    const args = alarmId === null ? [] : [alarmId];
+    return db.prepare(`
+      SELECT * FROM (
+        SELECT m.id, m.alarm_id, m.user_id, m.body, m.created_at, u.display_name, u.role
+        FROM chat_messages m LEFT JOIN users u ON u.id = m.user_id
+        WHERE ${where} ORDER BY m.id DESC LIMIT 200
+      ) ORDER BY id`).all(...args)
+      .map((m) => ({ ...m, role_label: auth.ROLE_LABELS[m.role] || '' }));
+  }
+
+  function generalAudience() {
+    return db.prepare('SELECT * FROM users WHERE disabled = 0').all()
+      .filter((u) => auth.can(u, 'chat.general')).map((u) => u.id);
+  }
+
+  function postMessage(user, alarmId, body) {
+    const text = String(body ?? '').trim().slice(0, 1000);
+    if (!text) throw new HttpError(400, 'Leere Nachricht');
+    const { lastInsertRowid } = db.prepare(
+      'INSERT INTO chat_messages (alarm_id, user_id, body, created_at) VALUES (?, ?, ?, ?)',
+    ).run(alarmId, user.id, text, now().toISOString());
+    const message = {
+      id: Number(lastInsertRowid), alarm_id: alarmId, user_id: user.id, body: text,
+      created_at: now().toISOString(), display_name: user.display_name, role: user.role,
+      role_label: auth.ROLE_LABELS[user.role],
+    };
+    const ids = alarmId === null ? generalAudience() : alarms.audience(alarms.load(alarmId));
+    notifier.message(ids, { type: 'chat', message });
+    return message;
+  }
+
+  app.get('/api/chat/general', need('chat.general'), wrap(() => chatMessages(null)));
+  app.post('/api/chat/general', need('chat.general'), wrap((req) => postMessage(req.user, null, req.body?.body)));
+
+  app.get('/api/alarms/:id/chat', need(), wrap((req) => chatMessages(alarmFor(req).id)));
+  app.post('/api/alarms/:id/chat', need(), wrap((req) => {
+    const alarm = alarmFor(req);
+    if (alarm.ended_at) throw new HttpError(400, 'Der Einsatz ist beendet');
+    return postMessage(req.user, alarm.id, req.body?.body);
+  }));
+
+  app.delete('/api/chat/:id', need('chat.moderate'), wrap((req) => {
+    const msg = db.prepare('SELECT * FROM chat_messages WHERE id = ?').get(Number(req.params.id));
+    if (!msg) throw new HttpError(404, 'Nachricht nicht gefunden');
+    db.prepare('DELETE FROM chat_messages WHERE id = ?').run(msg.id);
+    const ids = msg.alarm_id === null ? generalAudience() : alarms.audience(alarms.load(msg.alarm_id));
+    notifier.message(ids, { type: 'chat_delete', id: msg.id, alarm_id: msg.alarm_id });
     return { ok: true };
   }));
 

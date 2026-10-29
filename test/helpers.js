@@ -4,13 +4,14 @@ const auth = require('../src/auth');
 
 function setup() {
   const database = db.open(':memory:');
-  const calls = { alarm: [], update: [], noResponse: [] };
+  const calls = { alarm: [], update: [], noResponse: [], message: [] };
   const notifier = {
     publicKey: 'test-key',
     attach() {},
     alarm: (ids, a) => calls.alarm.push({ ids: [...ids].sort(), alarm: a }),
     update: (ids, a) => calls.update.push({ ids, alarm: a }),
     noResponse: (ids, a) => calls.noResponse.push({ ids: [...ids].sort(), alarm: a }),
+    message: (ids, m) => calls.message.push({ ids: [...ids].sort(), message: m }),
   };
   const addUser = (username, role, extra = {}) => {
     const { lastInsertRowid } = database.prepare(
