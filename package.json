@@ -1,0 +1,21 @@
+{
+  "name": "sanitaeteralarm",
+  "version": "1.0.0",
+  "description": "Alarmierung von Schulsanitätern im Schul-WLAN",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "author": "",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "express": "^4.22.3",
+    "web-push": "^3.6.7",
+    "ws": "^8.22.0"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=22.13"
+  }
+}
