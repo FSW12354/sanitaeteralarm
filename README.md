@@ -9,8 +9,15 @@ Das Konzept dazu: [Konzept: Alarmierungssystem für Schulsanitäter](https://cla
 | Rolle | Funktionen |
 | --- | --- |
 | Alarmierungssender | Alarm in drei Schritten (Ort mit optionaler Raumnummer, Verletzungsart, Dringlichkeit), Live-Ansicht der Zusagen, erneut senden, Einsatz beenden |
-| Sanitäter | Vollbild-Alarm mit Ton, „Komme“ / „Kann nicht“, verfügbar / nicht verfügbar, eigener Wochendienstplan, Mitteilungen bei gesperrtem Gerät |
-| Admin | alles oben, dazu Benutzer und Rollen, Dienstplan, Orte und Verletzungsarten, Einsatzprotokoll mit CSV-Export, Testalarm, Einstellungen |
+| Sanitäter | Vollbild-Alarm mit Ton, „Komme“ / „Kann nicht“, verfügbar / nicht verfügbar, eigener Wochendienstplan, Einsatzchat, allgemeiner Chat, Mitteilungen bei gesperrtem Gerät |
+| Gruppenführer/in | eine Ebene unter dem Admin; Rechte stellt der Admin unter „Protokoll & Einstellungen“ ein. Startwerte: wie Sanitäter, dazu Alarm auslösen, alle Einsätze sehen und steuern, Dienstplan pflegen, Protokoll sehen, Chatnachrichten löschen |
+| Admin | alles oben, dazu Benutzer und Rollen, Rechte der Gruppenführer, Orte und Verletzungsarten, Testalarm, Einstellungen |
+
+Chats:
+
+- **Einsatzchat** an jedem Alarm für Empfänger, Sender, Gruppenführer und Admin; wird mit dem Einsatzprotokoll zum Schuljahresende gelöscht.
+- **Allgemeiner Chat** für den Sanitätsdienst (nicht für Sender-Geräte); wird nach 30 Tagen gelöscht (einstellbar).
+- Chatnachrichten lösen keinen Alarmton und keine Mitteilung aus, nur einen Zähler am Reiter.
 
 Alarmregeln (Zeiten in den Einstellungen änderbar):
 
@@ -74,6 +81,5 @@ Aufbau:
 
 ## Noch nicht im Prototyp
 
-- Dienst-Tausch zwischen Sanitätern
-- Ferien ausblenden im Dienstplan
+- Dienstplan nach Schulraster, Mindestbesetzung, Abwesenheiten, Ferien, Diensttausch (Vorschlag steht im Konzept)
 - Einsatznotiz beim Abschließen

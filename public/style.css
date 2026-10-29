@@ -93,3 +93,15 @@ td, th { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line
 .list-item { flex-wrap: wrap; }
 .list-item > .row { flex: 0 1 auto; justify-content: flex-end; }
 .list-item select { width: auto; padding: 6px 8px; font-size: 14px; }
+.badge { display: inline-block; min-width: 20px; margin-left: 6px; padding: 0 6px; border-radius: 999px; background: var(--brand); color: #fff; font-size: 12px; font-weight: 700; line-height: 20px; text-align: center; }
+nav button.active .badge { background: #fff; color: var(--brand); }
+.chat { margin-top: 10px; display: grid; gap: 8px; }
+.chat-list { display: grid; gap: 8px; max-height: 340px; overflow-y: auto; padding: 4px 0; }
+.msg { padding: 8px 10px; border-radius: 12px; background: var(--bg); border: 1px solid var(--line); max-width: 92%; }
+.msg.own { justify-self: end; background: var(--card); }
+.msg-head { font-size: 13px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px; }
+.msg-body { white-space: pre-wrap; overflow-wrap: anywhere; }
+.msg-del { margin-left: auto; border: 0; background: none; color: var(--red); font-size: 12px; padding: 0 0 0 8px; }
+.chat-form { display: flex; gap: 8px; }
+.chat-form input { flex: 1; min-width: 0; }
+label.check { display: flex; align-items: center; gap: 8px; color: var(--ink); font-size: 15px; margin: 6px 0; }

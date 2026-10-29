@@ -72,6 +72,10 @@ function createNotifier(db, { subject = 'mailto:admin@schule.local', log = conso
     update(userIds, alarm) {
       sendSocket(userIds, { type: 'update', alarm });
     },
+    // Chatnachrichten gehen nur an offene Apps, ohne Ton und ohne Mitteilung.
+    message(userIds, message) {
+      sendSocket(userIds, message);
+    },
     noResponse(userIds, alarm) {
       sendSocket(userIds, { type: 'no_response', alarm });
       return sendPush(userIds, {

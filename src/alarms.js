@@ -5,7 +5,7 @@ const { getSetting } = require('./db');
 const URGENCY_LABELS = { red: 'Rot, sofort', yellow: 'Gelb, dringend', green: 'Grün, nicht dringend' };
 
 // Werte aus dem Konzept; der Admin kann sie unter Einstellungen ändern.
-const DEFAULTS = { escalate_seconds: 60, no_response_seconds: 120, school_year_end: '07-31' };
+const DEFAULTS = { escalate_seconds: 60, no_response_seconds: 120, school_year_end: '07-31', chat_retention_days: 30 };
 
 function setting(db, key) {
   return getSetting(db, key, String(DEFAULTS[key]));
@@ -157,6 +157,9 @@ function createAlarmService(db, notifier, clock = () => new Date()) {
     let cutoff = new Date(now.getFullYear(), mm - 1, dd, 23, 59, 59);
     if (cutoff > now) cutoff = new Date(now.getFullYear() - 1, mm - 1, dd, 23, 59, 59);
     db.prepare('DELETE FROM alarms WHERE created_at <= ?').run(cutoff.toISOString());
+    // Der allgemeine Chat wird nach einer festen Zahl von Tagen gelöscht.
+    const chatCutoff = new Date(now - Number(setting(db, 'chat_retention_days')) * 24 * 3600 * 1000);
+    db.prepare('DELETE FROM chat_messages WHERE alarm_id IS NULL AND created_at <= ?').run(chatCutoff.toISOString());
   }
 
   function visibleTo(user, { activeOnly = false } = {}) {
@@ -170,7 +173,7 @@ function createAlarmService(db, notifier, clock = () => new Date()) {
       || alarm.recipients.some((r) => r.user_id === user.id);
   }
 
-  return { create, respond, resend, end, tick, load, visibleTo, canSee };
+  return { create, respond, resend, end, tick, load, visibleTo, canSee, audience };
 }
 
 module.exports = { createAlarmService, URGENCY_LABELS, DEFAULTS, pickRecipients };

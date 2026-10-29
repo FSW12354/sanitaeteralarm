@@ -15,15 +15,32 @@ const PERMISSIONS = {
   'lists.manage': 'Orte und Verletzungsarten pflegen',
   'log.view': 'Einsatzprotokoll einsehen und exportieren',
   'settings.manage': 'Systemeinstellungen',
+  'chat.general': 'Allgemeiner Chat',
+  'chat.moderate': 'Chatnachrichten löschen',
 };
 
+// Startwerte für Gruppenführer/innen; der Admin kann sie in den Einstellungen ändern.
+const LEADER_DEFAULTS = [
+  'alarm.receive', 'alarm.send', 'alarm.view_all', 'duty.view_own', 'duty.manage',
+  'availability.set', 'log.view', 'chat.general', 'chat.moderate',
+];
+// Diese Rechte bleiben dem Admin vorbehalten.
+const ADMIN_ONLY = ['users.manage', 'settings.manage'];
+
 const ROLE_PERMISSIONS = {
-  medic: ['alarm.receive', 'duty.view_own', 'availability.set'],
+  medic: ['alarm.receive', 'duty.view_own', 'availability.set', 'chat.general'],
+  leader: [...LEADER_DEFAULTS],
   sender: ['alarm.send'],
   admin: null, // null = alle
 };
 
-const ROLE_LABELS = { medic: 'Sanitäter', sender: 'Alarmierungssender', admin: 'Admin' };
+const ROLE_LABELS = { medic: 'Sanitäter', leader: 'Gruppenführer/in', sender: 'Alarmierungssender', admin: 'Admin' };
+
+function setLeaderPermissions(list) {
+  const valid = [...new Set(list)].filter((p) => PERMISSIONS[p] && !ADMIN_ONLY.includes(p));
+  ROLE_PERMISSIONS.leader = valid;
+  return valid;
+}
 
 function can(user, permission) {
   if (!user) return false;
@@ -53,4 +70,15 @@ function newToken() {
   return crypto.randomBytes(32).toString('base64url');
 }
 
-module.exports = { PERMISSIONS, ROLE_LABELS, can, permissionsOf, hashPassword, verifyPassword, newToken };
+module.exports = {
+  PERMISSIONS,
+  ROLE_LABELS,
+  LEADER_DEFAULTS,
+  ADMIN_ONLY,
+  setLeaderPermissions,
+  can,
+  permissionsOf,
+  hashPassword,
+  verifyPassword,
+  newToken,
+};
