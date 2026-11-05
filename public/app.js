@@ -891,9 +891,54 @@ async function dutyHolidays() {
       dateRangeForm((v) => api('/holidays', { method: 'POST', body: { name: name.value, start: v.start, end: v.end } }), [name], { withReason: false })));
 }
 
+// --- Admin: QR-Codes für Räume -------------------------------------------------------
+// Wer den QR-Code im Raum scannt, ruft ohne Anmeldung den Sanitätsdienst (gelber Alarm an den Dienst).
+function qrImage(id) {
+  const box = h('div', { class: 'qr-thumb' });
+  fetch(`/api/qr-codes/${id}/qr.svg`, { credentials: 'same-origin' }).then((r) => r.text()).then((svg) => {
+    const doc = new DOMParser().parseFromString(svg, 'image/svg+xml');
+    if (doc.documentElement.nodeName === 'svg') box.replaceChildren(doc.documentElement);
+  }).catch(() => {});
+  return box;
+}
+
+function qrCard(locs, qrCodes) {
+  const loc = h('select', {}, locs.filter((l) => l.active).map((l) => h('option', { value: l.id }, `${l.building} – ${l.name}`)));
+  const room = h('input', { placeholder: 'Raum, z. B. 1.12 (freiwillig)', maxlength: 40 });
+  const put = (q, body, msg) => guard(async () => { await api(`/qr-codes/${q.id}`, { method: 'PUT', body }); if (msg) toast(msg); render(); });
+  return h('div', { class: 'card' }, h('h2', {}, 'QR-Codes für Räume'),
+    h('p', { class: 'hint' }, 'Ausgedruckt im Raum aufhängen. Wer ihn im Schul-WLAN scannt und „Sanitäter rufen“ tippt, alarmiert ohne Anmeldung den Dienst (Gelb: ohne Zusage nach 60 s an alle).'),
+    qrCodes.length === 0 ? h('p', { class: 'hint' }, 'Noch keine QR-Codes.') : qrCodes.map((q) => h('div', { class: 'list-item qr-item' },
+      qrImage(q.id),
+      h('div', { class: q.active ? '' : 'muted', style: 'flex:1' }, q.label, q.active ? null : ' (aus)'),
+      h('div', { class: 'row', style: 'flex:none' },
+        h('button', { class: 'btn secondary small', onclick: put(q, { active: !q.active }) }, q.active ? 'Ausschalten' : 'Einschalten'),
+        h('button', {
+          class: 'btn secondary small',
+          onclick: guard(async () => {
+            if (!confirm('Neuen Code erzeugen? Der alte Ausdruck funktioniert danach nicht mehr.')) return;
+            await put(q, { renew: true }, 'Neuer Code erzeugt. Bitte neu ausdrucken.')();
+          }),
+        }, 'Neuer Code'),
+        h('button', {
+          class: 'btn secondary small',
+          onclick: guard(async () => {
+            if (!confirm(`QR-Code „${q.label}“ löschen?`)) return;
+            await api(`/qr-codes/${q.id}`, { method: 'DELETE' });
+            render();
+          }),
+        }, 'Löschen')))),
+    h('div', { class: 'row', style: 'margin-top:12px' }, loc, room),
+    h('div', { class: 'row', style: 'margin-top:8px' },
+      h('button', {
+        class: 'btn', onclick: guard(async () => { await api('/qr-codes', { method: 'POST', body: { locationId: Number(loc.value), room: room.value } }); render(); }),
+      }, 'QR-Code anlegen'),
+      qrCodes.some((q) => q.active) ? h('a', { class: 'btn secondary', href: '/qr-codes/print', target: '_blank' }, 'Alle zum Drucken öffnen') : null));
+}
+
 // --- Admin: Orte und Verletzungsarten ---------------------------------------------
 async function viewLists() {
-  const [locs, injuries] = await Promise.all([api('/locations'), api('/injuries')]);
+  const [locs, injuries, qrCodes] = await Promise.all([api('/locations'), api('/injuries'), api('/qr-codes')]);
   const refresh = async () => { state.lists = await api('/lists'); render(); };
   const toggle = (route, row) => h('button', {
     class: 'btn secondary small',
@@ -916,7 +961,7 @@ async function viewLists() {
   const ln = h('input', { placeholder: 'Bereich, z. B. 1. Obergeschoss' });
   const inj = h('input', { placeholder: 'Verletzungsart' });
   return h('div', {},
-    h('h1', {}, 'Orte & Verletzungsarten'),
+    h('h1', {}, 'Orte, Verletzungen & QR-Codes'),
     h('p', { class: 'hint' }, 'Ausgeblendete Einträge erscheinen nicht mehr beim Alarmieren, bleiben aber im Protokoll erhalten.'),
     h('div', { class: 'card' }, h('h2', {}, 'Orte'),
       locs.map((l) => h('div', { class: 'list-item' },
@@ -926,6 +971,7 @@ async function viewLists() {
       h('div', { style: 'margin-top:8px' }, h('button', {
         class: 'btn', onclick: guard(async () => { await api('/locations', { method: 'POST', body: { building: lb.value, name: ln.value } }); await refresh(); }),
       }, 'Ort hinzufügen'))),
+    qrCard(locs, qrCodes),
     h('div', { class: 'card' }, h('h2', {}, 'Verletzungsarten'),
       injuries.map((i) => h('div', { class: 'list-item' },
         h('div', { class: i.active ? '' : 'muted' }, i.name),

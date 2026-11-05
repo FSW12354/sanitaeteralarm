@@ -38,6 +38,7 @@ function createAlarmService(db, notifier, clock = () => new Date()) {
       SELECT r.user_id, u.display_name, r.response, r.responded_at FROM alarm_recipients r
       JOIN users u ON u.id = r.user_id WHERE r.alarm_id = ? ORDER BY u.display_name`).all(id);
     alarm.urgency_label = URGENCY_LABELS[alarm.urgency];
+    if (!alarm.sender_name && alarm.qr_code_id) alarm.sender_name = 'QR-Code im Raum';
     alarm.is_test = !!alarm.is_test;
     return alarm;
   }
@@ -64,15 +65,16 @@ function createAlarmService(db, notifier, clock = () => new Date()) {
     return added;
   }
 
-  function create({ sender, location, injury, urgency, note = '', isTest = false }) {
+  // Ohne sender kommt der Alarm von einem QR-Code (qrCodeId).
+  function create({ sender = null, qrCodeId = null, location, injury, urgency, note = '', isTest = false }) {
     if (!URGENCY_LABELS[urgency]) throw new Error('Unbekannte Dringlichkeit');
     if (!location || !injury) throw new Error('Ort und Verletzungsart fehlen');
     const now = clock();
     const scope = urgency === 'red' ? 'all' : 'duty';
     const { lastInsertRowid } = db.prepare(`
-      INSERT INTO alarms (created_at, sender_id, location, injury, urgency, note, is_test, scope)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(now.toISOString(), sender.id, location, injury, urgency, String(note).slice(0, 500), isTest ? 1 : 0, scope);
+      INSERT INTO alarms (created_at, sender_id, qr_code_id, location, injury, urgency, note, is_test, scope)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(now.toISOString(), sender?.id ?? null, qrCodeId, location, injury, urgency, String(note).slice(0, 500), isTest ? 1 : 0, scope);
     const id = Number(lastInsertRowid);
     const added = addRecipients(id, pickRecipients(db, scope, now));
     const alarm = load(id);

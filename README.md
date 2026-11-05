@@ -28,6 +28,13 @@ Alarmregeln (Zeiten in den Einstellungen änderbar):
 - Bei Rot und Gelb wird der Sender nach 2 Minuten ohne Zusage aufgefordert, per Durchsage oder Telefon zu alarmieren.
 - Einsatzprotokolle werden zum Schuljahresende (Standard: 31.07.) automatisch gelöscht. Namen von Verletzten werden nicht gespeichert.
 
+Alarm per QR-Code:
+
+- Der Admin legt unter „Orte & Verletzungen“ für jeden Raum einen QR-Code an (Ort + Raumnummer) und druckt alle Codes als A4-Aushänge aus.
+- Wer den Code im Schul-WLAN scannt, sieht den Raum und tippt „Sanitäter rufen“, ohne Anmeldung. Die Verletzungsart kann man freiwillig antippen.
+- Der Alarm ist Gelb: Er geht sofort an die Diensthabenden und ohne Zusage nach 60 s an alle. Die Seite zeigt, ob jemand kommt; nach 2 Minuten ohne Zusage fordert sie auf, das Sekretariat anzurufen. Admin und Gruppenführer bekommen den Hinweis „Keine Zusage“.
+- Missbrauchsschutz: Erneutes Scannen während eines offenen Alarms löst keinen zweiten aus, höchstens 5 Alarme pro Code und Stunde. Ein Code lässt sich ausschalten oder durch einen neuen ersetzen; der alte Ausdruck ist dann ungültig.
+
 Dienstplan:
 
 - **Tagesdienst**: jeden Schultag (Mo–Fr) von 08:00 bis 14:30 Uhr, mindestens 2 Sanitäter. Im **Wochenplan** wählt der Dienstplaner pro Wochentag die Sanitäter aus einem Auswahlmenü. Unter **Dienstzeiten** lassen sich Uhrzeit und Mindestbesetzung ändern oder weitere Zeiten anlegen.
@@ -61,6 +68,7 @@ Umgebungsvariablen:
 | `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `ADMIN_NAME` | erstes Admin-Konto | `admin`, zufällig, `Admin` |
 | `PUSH_CONTACT` | Kontaktadresse für den Push-Dienst | `mailto:admin@schule.local` |
 | `TZ` | Zeitzone für den Dienstplan | Systemzeit, empfohlen `Europe/Berlin` |
+| `PUBLIC_URL` | Adresse in den QR-Codes, z. B. `https://sanialarm.schule.de` | Adresse, unter der der Admin die Seite aufruft |
 
 ## iPhone und iPad
 
