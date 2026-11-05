@@ -33,7 +33,14 @@ Alarm per QR-Code:
 - Der Admin legt unter „Orte & Verletzungen“ für jeden Raum einen QR-Code an (Ort + Raumnummer) und druckt alle Codes als A4-Aushänge aus.
 - Wer den Code im Schul-WLAN scannt, sieht den Raum und tippt „Sanitäter rufen“, ohne Anmeldung. Die Verletzungsart kann man freiwillig antippen.
 - Der Alarm ist Gelb: Er geht sofort an die Diensthabenden und ohne Zusage nach 60 s an alle. Die Seite zeigt, ob jemand kommt; nach 2 Minuten ohne Zusage fordert sie auf, das Sekretariat anzurufen. Admin und Gruppenführer bekommen den Hinweis „Keine Zusage“.
+- Das Sekretariat (alle Alarmierungssender-Konten) sieht Alarme per QR-Code live unter „Alarme“, bekommt eine Mitteilung und nach 2 Minuten ohne Zusage die Aufforderung zur Durchsage. Es wird nicht selbst alarmiert.
 - Missbrauchsschutz: Erneutes Scannen während eines offenen Alarms löst keinen zweiten aus, höchstens 5 Alarme pro Code und Stunde. Ein Code lässt sich ausschalten oder durch einen neuen ersetzen; der alte Ausdruck ist dann ungültig.
+
+Abzeichen in der Kopfzeile:
+
+- Admin: gelber Stern vor „Sanitäteralarm“.
+- Gruppenführer/innen: drei gelbe Balken hinter dem Schriftzug.
+- Zwei gelbe Balken vergibt der Admin unter „Benutzer“ an einzelne Sanitäter.
 
 Dienstplan:
 

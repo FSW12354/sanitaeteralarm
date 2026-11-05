@@ -17,6 +17,8 @@ async function start() {
     admin: s.addUser('admin', 'admin', { available: 0 }),
     lea: s.addUser('lea', 'medic'),
     tom: s.addUser('tom', 'medic'),
+    sek: s.addUser('sek', 'sender'),
+    lehrer: s.addUser('lehrer', 'sender'),
   };
   const day = s.database.prepare("SELECT id FROM periods WHERE name = 'Tagesdienst'").get();
   s.database.prepare('INSERT INTO duty_assignments (weekday, period_id, user_id) VALUES (3, ?, ?)').run(day.id, users.lea.id);
@@ -127,4 +129,29 @@ test('Ausgeschaltete oder erneuerte Codes alarmieren nicht, Begrenzung pro Stund
     s.alarms.end(data.id);
   }
   assert.equal((await s.call(`/api/qr/${fresh}/alarm`, { method: 'POST', body: {} })).status, 429);
+});
+
+test('Sekretariat sieht Alarme per QR-Code und bekommt den Hinweis ohne Zusage', async (t) => {
+  const s = await start();
+  t.after(s.close);
+  const { token } = await makeCode(s);
+  const sek = await s.login('sek');
+  const { data } = await s.call(`/api/qr/${token}/alarm`, { method: 'POST', body: {} });
+  const note = s.calls.remind.at(-1);
+  assert.equal(note.title, 'Alarm per QR-Code');
+  assert.ok(note.ids.includes(s.users.sek.id));
+  assert.match(note.body, /Raum 1\.12/);
+  assert.ok(s.calls.update.at(-1).ids.includes(s.users.sek.id), 'Live-Anzeige');
+  const list = (await sek('/api/alarms?active=1')).data;
+  assert.deepEqual(list.map((a) => a.id), [data.id]);
+  assert.equal(s.alarms.load(data.id).recipients.some((r) => r.user_id === s.users.sek.id), false, 'wird nicht selbst alarmiert');
+  now = new Date(now.getTime() + 120_000);
+  s.alarms.tick();
+  assert.ok(s.calls.noResponse.at(-1).ids.includes(s.users.sek.id), 'Aufforderung zur Durchsage');
+  // Normale Alarme anderer Sender sieht das Sekretariat weiterhin nicht.
+  const loc = s.database.prepare('SELECT id FROM locations LIMIT 1').get().id;
+  const inj = s.database.prepare('SELECT id FROM injury_types LIMIT 1').get().id;
+  const lehrer = await s.login('lehrer');
+  const other = (await lehrer('/api/alarms', { method: 'POST', body: { locationId: loc, injuryId: inj, urgency: 'green' } })).data;
+  assert.equal((await sek('/api/alarms')).data.some((a) => a.id === other.id), false);
 });
