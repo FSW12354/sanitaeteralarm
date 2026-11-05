@@ -84,6 +84,15 @@ function open(file) {
       no_response_at TEXT,
       ended_at TEXT
     );
+    -- QR-Codes in Räumen: Wer scannt, alarmiert ohne Anmeldung den Sanitätsdienst für diesen Raum.
+    CREATE TABLE IF NOT EXISTS qr_codes (
+      id INTEGER PRIMARY KEY,
+      token TEXT NOT NULL UNIQUE,
+      location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+      room TEXT NOT NULL DEFAULT '',
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS alarm_recipients (
       alarm_id INTEGER NOT NULL REFERENCES alarms(id) ON DELETE CASCADE,
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -161,6 +170,10 @@ function open(file) {
   `);
   db.exec('DROP TABLE IF EXISTS duty_slots');
   migrateLeaderRole(db);
+  // Alarme merken sich, ob sie über einen QR-Code ausgelöst wurden.
+  if (!db.prepare('PRAGMA table_info(alarms)').all().some((c) => c.name === 'qr_code_id')) {
+    db.exec('ALTER TABLE alarms ADD COLUMN qr_code_id INTEGER REFERENCES qr_codes(id) ON DELETE SET NULL');
+  }
 
   if (db.prepare('SELECT COUNT(*) AS n FROM locations').get().n === 0) {
     const ins = db.prepare('INSERT INTO locations (building, name, sort) VALUES (?, ?, ?)');

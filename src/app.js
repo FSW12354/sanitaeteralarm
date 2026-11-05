@@ -1,5 +1,7 @@
 'use strict';
 const path = require('node:path');
+const crypto = require('node:crypto');
+const QRCode = require('qrcode');
 const express = require('express');
 const { WebSocketServer } = require('ws');
 const auth = require('./auth');
@@ -457,6 +459,134 @@ function createApp({ db, notifier, secureCookies = false, clock }) {
   }
   listRoutes('locations', 'locations', ['building', 'name']);
   listRoutes('injuries', 'injury_types', ['name']);
+
+  // --- QR-Codes in Räumen ---------------------------------------------------------
+  // Ein QR-Code steht für einen Raum. Wer ihn im Schul-WLAN scannt und auf „Sanitäter rufen“ tippt,
+  // löst ohne Anmeldung einen gelben Alarm aus: zuerst an den Dienst, ohne Zusage nach 60 s an alle.
+  const QR_OPEN_MINUTES = 30; // so lange gilt ein offener Alarm aus demselben Raum als derselbe
+  const QR_MAX_PER_HOUR = 5;
+  const newToken = () => crypto.randomBytes(9).toString('base64url');
+  const qrLabel = (q) => `${q.building} – ${q.name}${q.room ? `, Raum ${q.room}` : ''}`;
+  const qrUrl = (req, token) => `${(process.env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '')}/r/${token}`;
+  const qrRow = (where, ...args) => db.prepare(`
+    SELECT q.*, l.building, l.name, l.active AS location_active FROM qr_codes q
+    JOIN locations l ON l.id = q.location_id WHERE ${where}`);
+  const qrById = (id) => qrRow('q.id = ?').get(Number(id));
+  const qrByToken = (token) => {
+    const q = qrRow('q.token = ?').get(String(token));
+    return q && q.active && q.location_active ? q : null;
+  };
+
+  app.get('/api/qr-codes', need('lists.manage'), wrap((req) => qrRow('1 = 1 ORDER BY l.sort, l.building, l.name, q.room').all()
+    .map((q) => ({ id: q.id, location_id: q.location_id, room: q.room, active: !!q.active, label: qrLabel(q), url: qrUrl(req, q.token) }))));
+  app.post('/api/qr-codes', need('lists.manage'), wrap((req) => {
+    const loc = db.prepare('SELECT * FROM locations WHERE id = ?').get(Number(req.body?.locationId));
+    if (!loc) throw new HttpError(400, 'Ort wählen');
+    const room = String(req.body?.room ?? '').trim().slice(0, 40);
+    const { lastInsertRowid } = db.prepare('INSERT INTO qr_codes (token, location_id, room, created_at) VALUES (?, ?, ?, ?)')
+      .run(newToken(), loc.id, room, now().toISOString());
+    return { id: Number(lastInsertRowid) };
+  }));
+  app.put('/api/qr-codes/:id', need('lists.manage'), wrap((req) => {
+    const q = qrById(req.params.id);
+    if (!q) throw new HttpError(404, 'QR-Code nicht gefunden');
+    if (req.body?.active !== undefined) db.prepare('UPDATE qr_codes SET active = ? WHERE id = ?').run(req.body.active ? 1 : 0, q.id);
+    // Neuer Code: Der alte Ausdruck funktioniert danach nicht mehr, etwa wenn er missbraucht wurde.
+    if (req.body?.renew) db.prepare('UPDATE qr_codes SET token = ? WHERE id = ?').run(newToken(), q.id);
+    return { ok: true };
+  }));
+  app.delete('/api/qr-codes/:id', need('lists.manage'), wrap((req) => {
+    db.prepare('DELETE FROM qr_codes WHERE id = ?').run(Number(req.params.id));
+    return { ok: true };
+  }));
+  app.get('/api/qr-codes/:id/qr.svg', need('lists.manage'), async (req, res, next) => {
+    try {
+      const q = qrById(req.params.id);
+      if (!q) throw new HttpError(404, 'QR-Code nicht gefunden');
+      res.type('image/svg+xml').send(await QRCode.toString(qrUrl(req, q.token), { type: 'svg', margin: 1, errorCorrectionLevel: 'M' }));
+    } catch (err) {
+      next(err);
+    }
+  });
+  // Druckansicht: alle aktiven QR-Codes mit Raum und kurzer Anleitung, zum Aushängen.
+  app.get('/qr-codes/print', need('lists.manage'), async (req, res, next) => {
+    try {
+      const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+      const rows = qrRow('q.active = 1 AND l.active = 1 ORDER BY l.sort, l.building, l.name, q.room').all();
+      const cards = await Promise.all(rows.map(async (q) => `<section>
+        <h1>Erste Hilfe nötig?</h1>
+        ${await QRCode.toString(qrUrl(req, q.token), { type: 'svg', margin: 1, errorCorrectionLevel: 'M' })}
+        <p class="room">${esc(qrLabel(q))}</p>
+        <p>Mit dem Handy im Schul-WLAN scannen und „Sanitäter rufen“ tippen.<br>Die diensthabenden Schulsanitäter werden sofort alarmiert.</p>
+        <p class="warn">Bei Lebensgefahr zuerst 112 anrufen.</p>
+      </section>`));
+      res.type('html').send(`<!doctype html><html lang="de"><head><meta charset="utf-8"><title>QR-Codes Sanitäteralarm</title>
+        <style>body{font-family:-apple-system,"Segoe UI",sans-serif;margin:0;color:#111}
+        section{page-break-after:always;break-after:page;text-align:center;padding:24mm 20mm;max-width:170mm;margin:0 auto}
+        h1{font-size:34px;color:#b91c1c;margin:0 0 12mm}svg{width:110mm;max-width:100%;height:auto}
+        .room{font-size:26px;font-weight:700;margin:8mm 0 4mm}p{font-size:18px;line-height:1.4}.warn{font-weight:700}
+        @media screen{section{border-bottom:1px dashed #999}}</style></head>
+        <body>${cards.join('') || '<p style="padding:20mm">Noch keine QR-Codes angelegt.</p>'}</body></html>`);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Öffentliche Seite hinter dem QR-Code
+  app.get('/r/:token', (_req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'qr.html')));
+
+  function qrStatus(alarm) {
+    return {
+      id: alarm.id,
+      created_at: alarm.created_at,
+      ended: !!alarm.ended_at,
+      escalated: !!alarm.escalated_at,
+      no_response: !!alarm.no_response_at,
+      alerted: alarm.recipients.length,
+      coming: alarm.recipients.filter((r) => r.response === 'coming').length,
+    };
+  }
+  const openQrAlarm = (q) => {
+    const since = new Date(now() - QR_OPEN_MINUTES * 60_000).toISOString();
+    const row = db.prepare('SELECT id FROM alarms WHERE qr_code_id = ? AND ended_at IS NULL AND created_at >= ? ORDER BY created_at DESC LIMIT 1')
+      .get(q.id, since);
+    return row ? alarms.load(row.id) : null;
+  };
+  const qrFor = (req) => {
+    const q = qrByToken(req.params.token);
+    if (!q) throw new HttpError(404, 'Dieser QR-Code ist nicht (mehr) gültig. Bitte Sekretariat oder Lehrkraft informieren.');
+    return q;
+  };
+
+  app.get('/api/qr/:token', wrap((req) => {
+    const q = qrFor(req);
+    const open = openQrAlarm(q);
+    return {
+      label: qrLabel(q),
+      injuries: db.prepare('SELECT id, name FROM injury_types WHERE active = 1 ORDER BY sort, name').all(),
+      alarm: open ? qrStatus(open) : null,
+    };
+  }));
+  app.post('/api/qr/:token/alarm', wrap((req) => {
+    const q = qrFor(req);
+    const open = openQrAlarm(q);
+    if (open) return qrStatus(open); // Mehrfaches Scannen löst keinen zweiten Alarm aus.
+    const hourAgo = new Date(now() - 3600_000).toISOString();
+    if (db.prepare('SELECT COUNT(*) AS n FROM alarms WHERE qr_code_id = ? AND created_at >= ?').get(q.id, hourAgo).n >= QR_MAX_PER_HOUR) {
+      throw new HttpError(429, 'Von diesem Raum kamen in der letzten Stunde schon viele Alarme. Bitte Sekretariat anrufen.');
+    }
+    const inj = req.body?.injuryId ? db.prepare('SELECT * FROM injury_types WHERE id = ? AND active = 1').get(Number(req.body.injuryId)) : null;
+    const alarm = alarms.create({
+      qrCodeId: q.id, location: qrLabel(q), injury: inj ? inj.name : 'Unbekannt, vor Ort klären', urgency: 'yellow', note: 'Über QR-Code ausgelöst',
+    });
+    return qrStatus(alarm);
+  }));
+  app.get('/api/qr/:token/alarm/:id', wrap((req) => {
+    const q = qrFor(req);
+    const alarm = alarms.load(Number(req.params.id));
+    if (!alarm || alarm.qr_code_id !== q.id) throw new HttpError(404, 'Alarm nicht gefunden');
+    return qrStatus(alarm);
+  }));
 
   // --- Protokoll und Einstellungen -------------------------------------------------
   app.get('/api/log.csv', need('log.view'), (req, res) => {
