@@ -47,7 +47,7 @@ test('Rechte je Rolle', async (t) => {
 
   const me = (await admin('/me')).data;
   assert.ok(me.permissions.includes('settings.manage'), 'Admin hat alle Rechte');
-  assert.deepEqual((await sender('/me')).data.permissions, ['alarm.send']);
+  assert.deepEqual((await sender('/me')).data.permissions, ['alarm.send', 'alarm.view_qr']);
 });
 
 test('Alarm senden, zusagen, beenden', async (t) => {
@@ -112,4 +112,18 @@ test('Protokoll als CSV', async (t) => {
   const res = await admin('/log.csv');
   assert.equal(res.status, 200);
   assert.match(res.data, /Zeitpunkt/);
+});
+
+test('Admin vergibt zwei Balken', async (t) => {
+  const s = await start();
+  t.after(s.close);
+  const admin = await s.login('admin');
+  const medic = await s.login('lea');
+  const lea = (await admin('/users')).data.find((u) => u.username === 'lea');
+  assert.equal(lea.stripes, 0);
+  assert.equal((await medic(`/users/${lea.id}`, { method: 'PUT', body: { stripes: 2 } })).status, 403);
+  assert.equal((await admin(`/users/${lea.id}`, { method: 'PUT', body: { stripes: 2 } })).status, 200);
+  assert.equal((await medic('/me')).data.user.stripes, 2);
+  await admin(`/users/${lea.id}`, { method: 'PUT', body: { stripes: 0 } });
+  assert.equal((await medic('/me')).data.user.stripes, 0);
 });

@@ -25,10 +25,11 @@ header {
   padding: calc(10px + env(safe-area-inset-top)) 16px 10px; background: var(--brand); color: #fff;
 }
 .brand { font-weight: 700; font-size: 18px; }
-header.leader .brand {
-  padding: 2px 12px; margin-left: -12px; text-shadow: 0 1px 2px rgba(0, 0, 0, .55);
-  background: linear-gradient(120deg, transparent 0 24%, #e8b923 24% 36%, transparent 36% 56%, #e8b923 56% 68%, transparent 68%);
-}
+header.rank-2 .brand, header.rank-3 .brand, header.rank-admin .brand { padding: 2px 12px; margin-left: -12px; text-shadow: 0 1px 2px rgba(0, 0, 0, .55); }
+header.rank-2 .brand { background: linear-gradient(120deg, transparent 0 24%, #e8b923 24% 36%, transparent 36% 56%, #e8b923 56% 68%, transparent 68%); }
+header.rank-3 .brand { background: linear-gradient(120deg, transparent 0 14%, #e8b923 14% 24%, transparent 24% 40%, #e8b923 40% 50%, transparent 50% 66%, #e8b923 66% 76%, transparent 76%); }
+header.rank-admin .brand::before { content: '★'; color: #f5c518; margin-right: 6px; font-size: 1.15em; text-shadow: 0 1px 2px rgba(0, 0, 0, .4); }
+.rank-pill { display: inline-block; padding: 0 8px; border-radius: 999px; background: #f5c518; color: #1c1c1a; font-size: 12px; font-weight: 700; line-height: 20px; }
 #who { font-size: 13px; text-align: right; opacity: .9; }
 nav { display: flex; gap: 6px; padding: 8px 12px; overflow-x: auto; background: var(--card); border-bottom: 1px solid var(--line); }
 nav button { flex: none; border: 0; background: none; padding: 8px 12px; border-radius: 999px; font-size: 15px; color: var(--muted); }

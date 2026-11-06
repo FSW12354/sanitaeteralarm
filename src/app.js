@@ -35,6 +35,7 @@ function publicUser(u) {
     available: !!u.available,
     default_location_id: u.default_location_id,
     disabled: !!u.disabled,
+    stripes: u.stripes ? 2 : 0,
   };
 }
 
@@ -430,6 +431,7 @@ function createApp({ db, notifier, secureCookies = false, clock }) {
     if (b.password) {
       db.prepare('UPDATE users SET pw_hash = ? WHERE id = ?').run(auth.hashPassword(b.password), user.id);
     }
+    if (b.stripes !== undefined) db.prepare('UPDATE users SET stripes = ? WHERE id = ?').run(b.stripes ? 2 : 0, user.id);
     if (disabled || b.password) db.prepare('DELETE FROM sessions WHERE user_id = ?').run(user.id);
     return { ok: true };
   }));

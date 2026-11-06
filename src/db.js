@@ -170,6 +170,10 @@ function open(file) {
   `);
   db.exec('DROP TABLE IF EXISTS duty_slots');
   migrateLeaderRole(db);
+  // Abzeichen: zwei gelbe Balken, die der Admin einzelnen Sanitätern zuweist.
+  if (!db.prepare('PRAGMA table_info(users)').all().some((c) => c.name === 'stripes')) {
+    db.exec('ALTER TABLE users ADD COLUMN stripes INTEGER NOT NULL DEFAULT 0');
+  }
   // Alarme merken sich, ob sie über einen QR-Code ausgelöst wurden.
   if (!db.prepare('PRAGMA table_info(alarms)').all().some((c) => c.name === 'qr_code_id')) {
     db.exec('ALTER TABLE alarms ADD COLUMN qr_code_id INTEGER REFERENCES qr_codes(id) ON DELETE SET NULL');

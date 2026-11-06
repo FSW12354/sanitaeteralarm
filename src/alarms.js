@@ -43,12 +43,17 @@ function createAlarmService(db, notifier, clock = () => new Date()) {
     return alarm;
   }
 
+  // Wer Alarme per QR-Code sieht (z. B. das Sekretariat), ohne selbst alarmiert zu werden.
+  const qrWatchers = () => db.prepare('SELECT * FROM users WHERE disabled = 0').all()
+    .filter((u) => can(u, 'alarm.view_qr') && !can(u, 'alarm.view_all')).map((u) => u.id);
+
   function audience(alarm) {
     const ids = new Set(alarm.recipients.map((r) => r.user_id));
     if (alarm.sender_id) ids.add(alarm.sender_id);
     for (const u of db.prepare('SELECT * FROM users WHERE disabled = 0').all()) {
       if (can(u, 'alarm.view_all')) ids.add(u.id);
     }
+    if (alarm.qr_code_id) for (const id of qrWatchers()) ids.add(id);
     return [...ids];
   }
 
@@ -80,6 +85,10 @@ function createAlarmService(db, notifier, clock = () => new Date()) {
     const alarm = load(id);
     notifier.alarm(added, alarm);
     broadcast(alarm);
+    if (qrCodeId) {
+      const watchers = qrWatchers().filter((uid) => !added.includes(uid));
+      if (watchers.length) notifier.remind(watchers, 'Alarm per QR-Code', `${location}: ${injury}. Die Sanitäter sind alarmiert.`);
+    }
     return alarm;
   }
 
@@ -166,6 +175,7 @@ function createAlarmService(db, notifier, clock = () => new Date()) {
 
   function canSee(user, alarm) {
     return can(user, 'alarm.view_all') || alarm.sender_id === user.id
+      || (!!alarm.qr_code_id && can(user, 'alarm.view_qr'))
       || alarm.recipients.some((r) => r.user_id === user.id);
   }
 

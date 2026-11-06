@@ -7,6 +7,7 @@ const PERMISSIONS = {
   'alarm.receive': 'Alarm empfangen und quittieren',
   'alarm.send': 'Alarm auslösen',
   'alarm.view_all': 'Alle laufenden Alarme sehen',
+  'alarm.view_qr': 'Alarme per QR-Code sehen (z. B. Sekretariat)',
   'alarm.test': 'Testalarm auslösen',
   'duty.view_own': 'Eigenen Dienstplan sehen',
   'duty.manage': 'Dienstplan erstellen und ändern',
@@ -30,7 +31,7 @@ const ADMIN_ONLY = ['users.manage', 'settings.manage'];
 const ROLE_PERMISSIONS = {
   medic: ['alarm.receive', 'duty.view_own', 'availability.set', 'chat.general'],
   leader: [...LEADER_DEFAULTS],
-  sender: ['alarm.send'],
+  sender: ['alarm.send', 'alarm.view_qr'],
   admin: null, // null = alle
 };
 

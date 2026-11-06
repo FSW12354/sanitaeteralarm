@@ -173,10 +173,21 @@ function tabsFor() {
   return tabs;
 }
 
+function rankOf(u) {
+  if (u.role === 'admin') return 'rank-admin';
+  if (u.role === 'leader') return 'rank-3';
+  return u.stripes === 2 ? 'rank-2' : null;
+}
+const RANK_LABELS = { 'rank-admin': '★', 'rank-3': '3 Balken', 'rank-2': '2 Balken' };
+
 function renderShell() {
   document.getElementById('top').hidden = false;
-  // Gruppenführer erkennt man an zwei goldgelben Streifen hinter dem Schriftzug.
-  document.getElementById('top').classList.toggle('leader', state.me.role === 'leader');
+  // Abzeichen hinter dem Schriftzug: Admin gelber Stern, Gruppenführer drei gelbe Balken,
+  // zwei Balken für Sanitäter, denen der Admin sie zuweist.
+  const top = document.getElementById('top');
+  top.classList.remove('rank-admin', 'rank-3', 'rank-2');
+  const rank = rankOf(state.me);
+  if (rank) top.classList.add(rank);
   document.getElementById('who').replaceChildren(
     h('div', {}, state.me.display_name), h('div', {}, state.me.role_label),
   );
@@ -714,12 +725,17 @@ async function viewUsers() {
     h('h1', {}, 'Benutzer'),
     h('div', { class: 'card' }, users.map((u) => h('div', { class: 'list-item' },
       h('div', {}, h('strong', {}, u.display_name), ' ', h('span', { class: 'muted' }, `${u.username} · ${u.role_label}`),
+        rankOf(u) ? [' ', h('span', { class: 'rank-pill' }, RANK_LABELS[rankOf(u)])] : null,
         u.disabled ? [' ', pill('grey', 'gesperrt')] : null,
         u.role !== 'sender' && !u.available ? [' ', pill('grey', 'nicht verfügbar')] : null),
       h('div', { class: 'row', style: 'flex:none' },
         h('select', {
           onchange: guard(async (e) => { await api(`/users/${u.id}`, { method: 'PUT', body: { role: e.target.value } }); render(); }),
         }, Object.entries(ROLE_NAMES).map(([r, label]) => h('option', { value: r, selected: u.role === r }, label))),
+        u.role === 'medic' ? h('button', {
+          class: 'btn secondary small',
+          onclick: guard(async () => { await api(`/users/${u.id}`, { method: 'PUT', body: { stripes: u.stripes === 2 ? 0 : 2 } }); render(); }),
+        }, u.stripes === 2 ? '2 Balken entfernen' : '2 Balken geben') : null,
         h('button', {
           class: 'btn secondary small',
           onclick: guard(async () => {
