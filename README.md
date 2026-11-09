@@ -94,7 +94,8 @@ Grenzen: Web Push klingelt nicht, wenn das iPhone stumm geschaltet ist. Ist die 
 2. Menü „…“ → „Apps“ → „Diese Website als App installieren“. Danach unter `edge://apps` bei der App „Beim Anmelden automatisch starten“ einschalten.
 3. Unter „Konto“ die **Kompaktansicht** einschalten (oder einmal `/?kompakt` aufrufen): ein schmales Fenster nur mit den laufenden Alarmen. Die Zahl laufender Alarme steht am Symbol in der Taskleiste.
 4. In der Kompaktansicht „Mitteilungen einschalten“ tippen: Neue QR-Alarme und „Keine Zusage“ erscheinen dann auch als Windows-Mitteilung (braucht ausgehenden Internetzugang des PCs, wie jede Web-Push-Mitteilung). Ist das Fenster offen, kommen Anzeige und Hinweiston auch ohne Internet über das Schulnetz.
-5. Optional mit Microsoft PowerToys „Immer im Vordergrund“ (Win+Strg+T) das Fenster oben halten.
+5. In der Kompaktansicht kann das Sekretariat direkt **Alarm auslösen** (gleicher Ablauf wie „Alarm senden“) und mit **Einsatz beenden** jeden Alarm schließen, den es sieht: eigene Alarme und alle Alarme per QR-Code. Das regelt das Recht „Sichtbare Alarme beenden“ (`alarm.end`), das die Rolle Alarmierungssender hat.
+6. Optional mit Microsoft PowerToys „Immer im Vordergrund“ (Win+Strg+T) das Fenster oben halten.
 
 ## Entwicklung
 

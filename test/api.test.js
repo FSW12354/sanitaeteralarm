@@ -47,7 +47,7 @@ test('Rechte je Rolle', async (t) => {
 
   const me = (await admin('/me')).data;
   assert.ok(me.permissions.includes('settings.manage'), 'Admin hat alle Rechte');
-  assert.deepEqual((await sender('/me')).data.permissions, ['alarm.send', 'alarm.view_qr']);
+  assert.deepEqual((await sender('/me')).data.permissions, ['alarm.send', 'alarm.view_qr', 'alarm.end']);
 });
 
 test('Alarm senden, zusagen, beenden', async (t) => {

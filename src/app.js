@@ -169,8 +169,10 @@ function createApp({ db, notifier, secureCookies = false, clock }) {
     }
   }));
 
+  // alarmFor() hat schon geprüft, dass der Alarm sichtbar ist; mit alarm.end
+  // (z. B. Sekretariat) darf man jeden sichtbaren Alarm beenden, auch QR-Alarme.
   function mayControl(user, alarm) {
-    return auth.can(user, 'alarm.view_all') || alarm.sender_id === user.id
+    return auth.can(user, 'alarm.view_all') || auth.can(user, 'alarm.end') || alarm.sender_id === user.id
       || alarm.recipients.some((r) => r.user_id === user.id && r.response === 'coming');
   }
 
