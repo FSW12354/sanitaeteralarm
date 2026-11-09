@@ -19,6 +19,8 @@ function receivers(db) {
 
 // Wer bekommt den Alarm? Rot geht immer an alle verfügbaren Sanitäter,
 // Gelb und Grün an den Dienst. Ist niemand im Dienst, geht er an alle.
+// Sagt im Dienst niemand zu (Zeit escalate_seconds) oder sagen alle ab,
+// geht er ebenfalls an alle (siehe tick und respond).
 function pickRecipients(db, scope, now) {
   const all = receivers(db);
   if (scope === 'all') return all;
@@ -92,14 +94,30 @@ function createAlarmService(db, notifier, clock = () => new Date()) {
     return alarm;
   }
 
+  // Der Dienst hat nicht zugesagt: Alarm sofort an alle verfügbaren Sanitäter.
+  function escalate(alarm, now) {
+    db.prepare('UPDATE alarms SET escalated_at = ?, scope = ? WHERE id = ?').run(now.toISOString(), 'all', alarm.id);
+    const added = addRecipients(alarm.id, receivers(db));
+    const after = load(alarm.id);
+    notifier.alarm(added, after);
+    broadcast(after);
+    return after;
+  }
+
   function respond(alarmId, user, response) {
     if (!['coming', 'declined'].includes(response)) throw new Error('Unbekannte Antwort');
     const res = db.prepare(`
       UPDATE alarm_recipients SET response = ?, responded_at = ?
       WHERE alarm_id = ? AND user_id = ?`).run(response, clock().toISOString(), alarmId, user.id);
     if (res.changes === 0) throw new Error('Kein Empfänger dieses Alarms');
-    const alarm = load(alarmId);
-    broadcast(alarm);
+    let alarm = load(alarmId);
+    // Haben alle aus dem Dienst abgesagt, wird nicht gewartet.
+    if (!alarm.ended_at && alarm.scope === 'duty' && !alarm.escalated_at
+      && alarm.recipients.every((r) => r.response === 'declined')) {
+      alarm = escalate(alarm, clock());
+    } else {
+      broadcast(alarm);
+    }
     return alarm;
   }
 
@@ -133,12 +151,9 @@ function createAlarmService(db, notifier, clock = () => new Date()) {
       let alarm = load(id);
       const age = now - new Date(alarm.created_at);
       if (hasComing(alarm)) continue;
-      if (alarm.urgency === 'yellow' && !alarm.escalated_at && age >= escalateMs) {
-        db.prepare('UPDATE alarms SET escalated_at = ?, scope = ? WHERE id = ?').run(now.toISOString(), 'all', id);
-        const added = addRecipients(id, receivers(db));
-        alarm = load(id);
-        notifier.alarm(added, alarm);
-        broadcast(alarm);
+      // Gelb und Grün gehen zuerst an den Dienst; sagt dort niemand zu, an alle.
+      if (alarm.scope === 'duty' && !alarm.escalated_at && age >= escalateMs) {
+        alarm = escalate(alarm, now);
       }
       if (alarm.urgency !== 'green' && !alarm.no_response_at && age >= noResponseMs) {
         db.prepare('UPDATE alarms SET no_response_at = ? WHERE id = ?').run(now.toISOString(), id);

@@ -1073,7 +1073,7 @@ async function viewAdmin() {
     const rt = h('input', { type: 'time', value: settings.reminder_time });
     out.append(h('div', { class: 'card' },
       h('h2', {}, 'Einstellungen'),
-      h('label', {}, 'Gelb: an alle weiterleiten nach … Sekunden ohne Zusage'), esc,
+      h('label', {}, 'Gelb und Grün: an alle weiterleiten, wenn der Dienst nach … Sekunden nicht zugesagt hat (sagen alle ab, sofort)'), esc,
       h('label', {}, 'Hinweis „Durchsage oder Telefon“ nach … Sekunden ohne Zusage'), nr,
       h('label', {}, 'Schuljahresende (MM-TT): Einsatzprotokolle davor werden gelöscht'), sy,
       h('label', {}, 'Allgemeinen Chat löschen nach … Tagen'), cr,
