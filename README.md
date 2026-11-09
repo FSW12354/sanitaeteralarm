@@ -22,8 +22,7 @@ Chats:
 Alarmregeln (Zeiten in den Einstellungen änderbar):
 
 - **Rot:** sofort an alle verfügbaren Sanitäter, beim Sender erscheint „112 rufen?“.
-- **Gelb:** an den Dienst; nach 60 Sekunden ohne Zusage an alle.
-- **Grün:** nur an den Dienst.
+- **Gelb und Grün:** zuerst an den Dienst. Sagt dort nach 60 Sekunden niemand zu, geht der Alarm an alle verfügbaren Sanitäter. Sagen alle aus dem Dienst ab („Kann nicht“), geht er sofort an alle.
 - Ist gerade niemand im Dienst, geht jeder Alarm an alle verfügbaren Sanitäter.
 - Bei Rot und Gelb wird der Sender nach 2 Minuten ohne Zusage aufgefordert, per Durchsage oder Telefon zu alarmieren.
 - Einsatzprotokolle werden zum Schuljahresende (Standard: 31.07.) automatisch gelöscht. Namen von Verletzten werden nicht gespeichert.

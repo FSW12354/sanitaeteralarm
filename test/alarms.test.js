@@ -23,14 +23,45 @@ function scenario() {
 
 const base = { location: 'Sporthalle – Halle', injury: 'Sturz/Prellung' };
 
-test('Grün geht nur an den Dienst', () => {
+test('Grün geht zuerst an den Dienst, ohne Zusage nach 60 Sekunden an alle', () => {
   const s = scenario();
   const a = s.service.create({ sender: s.sender, ...base, urgency: 'green' });
   assert.deepEqual(a.recipients.map((r) => r.user_id), [s.duty.id]);
+  s.advance(59);
+  s.service.tick();
+  assert.equal(s.service.load(a.id).escalated_at, null);
+  s.advance(1);
+  s.service.tick();
+  const after = s.service.load(a.id);
+  assert.ok(after.escalated_at);
+  assert.deepEqual(s.calls.alarm.at(-1).ids, [s.other.id]);
+  s.advance(600);
+  s.service.tick();
+  assert.equal(s.calls.noResponse.length, 0, 'bei Grün kein Durchsage-Hinweis');
+});
+
+test('Sagt der Dienst ab, geht der Alarm sofort an alle', () => {
+  for (const urgency of ['yellow', 'green']) {
+    const s = scenario();
+    const a = s.service.create({ sender: s.sender, ...base, urgency });
+    const after = s.service.respond(a.id, s.duty, 'declined');
+    assert.ok(after.escalated_at, urgency);
+    assert.deepEqual(s.calls.alarm.at(-1).ids, [s.other.id]);
+    // Später läuft keine zweite Weiterleitung.
+    const count = s.calls.alarm.length;
+    s.advance(120);
+    s.service.tick();
+    assert.equal(s.calls.alarm.length, count);
+  }
+});
+
+test('Grün mit Zusage bleibt beim Dienst', () => {
+  const s = scenario();
+  const a = s.service.create({ sender: s.sender, ...base, urgency: 'green' });
+  s.service.respond(a.id, s.duty, 'coming');
   s.advance(600);
   s.service.tick();
   assert.equal(s.service.load(a.id).escalated_at, null);
-  assert.equal(s.calls.noResponse.length, 0);
 });
 
 test('Rot geht an alle verfügbaren, nicht an nicht verfügbare', () => {
