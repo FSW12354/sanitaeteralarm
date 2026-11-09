@@ -88,6 +88,14 @@ Ein gesperrtes iPhone bekommt Alarme nur über **Web Push** (ab iOS 16.4). Dafü
 
 Grenzen: Web Push klingelt nicht, wenn das iPhone stumm geschaltet ist. Ist die App geöffnet, spielt sie einen eigenen Alarmton. Ein Alarm trotz Stummschaltung ginge nur mit einer eigenen iOS-App und einer Sondergenehmigung von Apple („kritische Hinweise“). Das soll der Pilot klären.
 
+## PC im Sekretariat (Windows)
+
+1. In Microsoft Edge die Adresse des Sanitäteralarms öffnen und mit dem Sekretariats-Konto anmelden.
+2. Menü „…“ → „Apps“ → „Diese Website als App installieren“. Danach unter `edge://apps` bei der App „Beim Anmelden automatisch starten“ einschalten.
+3. Unter „Konto“ die **Kompaktansicht** einschalten (oder einmal `/?kompakt` aufrufen): ein schmales Fenster nur mit den laufenden Alarmen. Die Zahl laufender Alarme steht am Symbol in der Taskleiste.
+4. In der Kompaktansicht „Mitteilungen einschalten“ tippen: Neue QR-Alarme und „Keine Zusage“ erscheinen dann auch als Windows-Mitteilung (braucht ausgehenden Internetzugang des PCs, wie jede Web-Push-Mitteilung). Ist das Fenster offen, kommen Anzeige und Hinweiston auch ohne Internet über das Schulnetz.
+5. Optional mit Microsoft PowerToys „Immer im Vordergrund“ (Win+Strg+T) das Fenster oben halten.
+
 ## Entwicklung
 
 ```sh

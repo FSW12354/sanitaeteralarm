@@ -137,3 +137,14 @@ label.check { display: flex; align-items: center; gap: 8px; color: var(--ink); f
 .qr-thumb { width: 64px; height: 64px; flex: none; background: #fff; }
 .qr-thumb svg { width: 100%; height: 100%; display: block; }
 a.btn { display: inline-block; text-align: center; text-decoration: none; }
+/* Kompaktansicht */
+main.compact { max-width: 420px; padding: 8px; }
+.compact-empty { padding: 24px 12px; text-align: center; color: var(--green); font-weight: 700; font-size: 18px; }
+.compact-alarm { background: var(--card); border: 1px solid var(--line); border-left: 6px solid var(--line); border-radius: 10px; padding: 8px 10px; margin-bottom: 8px; font-size: 14px; }
+.compact-alarm.u-red { border-left-color: var(--red); }
+.compact-alarm.u-yellow { border-left-color: var(--yellow); }
+.compact-alarm.u-green { border-left-color: var(--green); }
+.compact-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.compact-loc { font-weight: 700; font-size: 16px; margin-top: 4px; }
+.compact-ok { color: var(--green); font-weight: 700; }
+.compact-warn { color: var(--red); font-weight: 700; }

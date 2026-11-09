@@ -118,6 +118,23 @@ function stopSound() {
   if (audio?.timer) clearInterval(audio.timer);
   if (audio) audio.timer = null;
 }
+// Einmaliger Hinweiston für alle, die einen Alarm nur mitverfolgen
+function chime() {
+  unlockAudio();
+  if (!audio || audio.timer) return;
+  let t = audio.ctx.currentTime;
+  for (const freq of [784, 988, 784, 988]) {
+    const o = audio.ctx.createOscillator();
+    const g = audio.ctx.createGain();
+    o.type = 'sine';
+    o.frequency.value = freq;
+    g.gain.value = 0.25;
+    o.connect(g).connect(audio.ctx.destination);
+    o.start(t);
+    o.stop(t + 0.18);
+    t += 0.22;
+  }
+}
 
 // --- Start ------------------------------------------------------------------
 async function boot() {
@@ -130,6 +147,8 @@ async function boot() {
   } catch {
     return renderLogin();
   }
+  if (/[?&]kompakt\b/.test(location.search || '')) setCompact(true);
+  else state.compact = isCompact();
   state.lists = await api('/lists');
   for (const a of await api('/alarms?active=1')) state.alarms.set(a.id, a);
   connect();
@@ -180,6 +199,26 @@ function rankOf(u) {
 }
 const RANK_LABELS = { 'rank-admin': '★', 'rank-3': '3 Balken', 'rank-2': '2 Balken' };
 
+// Kompaktansicht: schmales Fenster nur mit den laufenden Alarmen, z. B. für den PC im Sekretariat.
+// Die Einstellung gilt pro Gerät; /?kompakt schaltet sie ebenfalls ein.
+const COMPACT_KEY = 'sanialarm.compact';
+function isCompact() {
+  try { return localStorage.getItem(COMPACT_KEY) === '1'; } catch { return false; }
+}
+function setCompact(on) {
+  try { if (on) localStorage.setItem(COMPACT_KEY, '1'); else localStorage.removeItem(COMPACT_KEY); } catch { /* ohne Speicher nur für diese Sitzung */ }
+  state.compact = on;
+}
+
+// Zahl laufender Alarme am App-Symbol in der Taskleiste bzw. auf dem Home-Bildschirm
+function updateBadge() {
+  const n = state.alarms.size;
+  try {
+    if (n > 0) window.navigator.setAppBadge?.(n);
+    else window.navigator.clearAppBadge?.();
+  } catch { /* nicht überall verfügbar */ }
+}
+
 function renderShell() {
   document.getElementById('top').hidden = false;
   // Abzeichen hinter dem Schriftzug: Admin gelber Stern, Gruppenführer drei gelbe Balken,
@@ -193,8 +232,11 @@ function renderShell() {
   );
   const tabs = tabsFor();
   if (!state.tab) state.tab = tabs[0][0];
+  document.getElementById('main').classList.toggle('compact', state.compact);
   render();
-  renderNav();
+  if (state.compact) document.getElementById('tabs').hidden = true;
+  else renderNav();
+  updateBadge();
 }
 
 function unreadFor(tab) {
@@ -230,7 +272,7 @@ function render() {
     send: viewSend, alarms: viewAlarms, chat: viewChat, mine: viewMine, users: viewUsers,
     duty: viewDuty, lists: viewLists, admin: viewAdmin, account: viewAccount,
   };
-  const out = (views[state.tab] || viewAlarms)();
+  const out = state.compact ? viewCompact() : (views[state.tab] || viewAlarms)();
   if (out instanceof Promise) {
     out.then(show).catch((err) => toast(err.message));
   } else {
@@ -250,6 +292,8 @@ function connect() {
     if (msg.type === 'chat' || msg.type === 'chat_delete') return onChat(msg);
     if (msg.type === 'notice') {
       toast(`${msg.title}: ${msg.body}`);
+      // Wer QR-Alarme nur mitverfolgt (Sekretariat), hört einen kurzen Hinweiston.
+      if (msg.title === 'Alarm per QR-Code') chime();
       if (['mine', 'duty'].includes(state.tab)) render();
       return;
     }
@@ -257,9 +301,13 @@ function connect() {
     if (a.ended_at) state.alarms.delete(a.id);
     else state.alarms.set(a.id, a);
     if (msg.type === 'alarm') state.handled.delete(a.id);
-    if (msg.type === 'no_response') toast('Keine Zusage! Bitte per Durchsage oder Telefon alarmieren.');
+    if (msg.type === 'no_response') {
+      toast('Keine Zusage! Bitte per Durchsage oder Telefon alarmieren.');
+      if (!myRecipient(a)) chime();
+    }
     checkIncoming();
-    if (['alarms', 'send'].includes(state.tab)) render();
+    updateBadge();
+    if (state.compact || ['alarms', 'send'].includes(state.tab)) render();
   };
   ws.onclose = () => {
     setOffline(true);
@@ -269,6 +317,8 @@ function connect() {
         state.alarms.clear();
         for (const a of await api('/alarms?active=1')) state.alarms.set(a.id, a);
         checkIncoming();
+        updateBadge();
+        if (state.compact) render();
       } catch { /* weiter versuchen */ }
       connect();
     }, 3000);
@@ -1063,6 +1113,33 @@ async function viewAdmin() {
 }
 
 // --- Konto -----------------------------------------------------------------------
+// --- Kompaktansicht -------------------------------------------------------------
+function viewCompact() {
+  const list = [...state.alarms.values()].sort((x, y) => y.created_at.localeCompare(x.created_at));
+  const pushOff = (can('alarm.receive') || can('alarm.view_qr')) && 'Notification' in window && Notification.permission !== 'granted';
+  return h('div', {},
+    list.length === 0
+      ? h('div', { class: 'compact-empty' }, '✓ Kein laufender Alarm')
+      : list.map((a) => {
+        const coming = a.recipients.filter((r) => r.response === 'coming');
+        return h('div', { class: `compact-alarm u-${a.urgency}` },
+          h('div', { class: 'compact-head' }, pill(a.urgency, a.urgency_label), h('span', { class: 'muted' }, time(a.created_at)),
+            a.qr_code_id ? h('span', { class: 'muted' }, 'QR-Code') : null),
+          h('div', { class: 'compact-loc' }, a.location),
+          h('div', {}, a.injury),
+          coming.length
+            ? h('div', { class: 'compact-ok' }, `Kommt: ${coming.map((r) => r.display_name).join(', ')}`)
+            : a.no_response_at
+              ? h('div', { class: 'compact-warn' }, 'Keine Zusage! Bitte Durchsage oder Telefon.')
+              : h('div', { class: 'muted' }, a.escalated_at ? 'Noch keine Zusage, alle Sanitäter alarmiert' : 'Noch keine Zusage'));
+      }),
+    pushOff ? h('button', {
+      class: 'btn secondary small', style: 'margin-top:12px',
+      onclick: guard(async () => { await subscribePush(true); toast('Mitteilungen eingeschaltet'); render(); }),
+    }, 'Windows-/Geräte-Mitteilungen einschalten') : null,
+    h('button', { class: 'btn secondary small', style: 'margin-top:12px', onclick: () => { setCompact(false); renderShell(); } }, 'Volle Ansicht'));
+}
+
 function viewAccount() {
   const oldPw = h('input', { type: 'password', autocomplete: 'current-password' });
   const newPw = h('input', { type: 'password', autocomplete: 'new-password' });
@@ -1082,7 +1159,11 @@ function viewAccount() {
           newPw.value = '';
         }),
       }, 'Ändern'))),
-    can('alarm.receive') ? pushCard() : null,
+    can('alarm.receive') || can('alarm.view_qr') ? pushCard() : null,
+    h('div', { class: 'card' },
+      h('h2', {}, 'Kompaktansicht'),
+      h('p', { class: 'hint' }, 'Nur die laufenden Alarme in einem schmalen Fenster, z. B. am PC im Sekretariat. Gilt nur für dieses Gerät.'),
+      h('button', { class: 'btn secondary', onclick: () => { setCompact(true); renderShell(); } }, 'Kompaktansicht einschalten')),
     h('div', { class: 'card' }, h('button', {
       class: 'btn secondary',
       onclick: guard(async () => { await api('/logout', { method: 'POST' }); location.reload(); }),
