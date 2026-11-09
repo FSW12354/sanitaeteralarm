@@ -548,7 +548,7 @@ function alarmCard(a, detailed = false) {
   const waiting = a.recipients.filter((r) => !r.response);
   const mine = myRecipient(a);
   const isSender = a.sender_id === state.me.id;
-  const canControl = can('alarm.view_all') || isSender || mine?.response === 'coming';
+  const canControl = can('alarm.view_all') || can('alarm.end') || isSender || mine?.response === 'coming';
   return h('div', { class: 'card', id: `alarm-${a.id}` },
     a.urgency === 'red' && (isSender || can('alarm.view_all'))
       ? h('div', { class: 'banner danger' }, 'Lebensgefahr? Sofort 112 rufen!') : null,
@@ -1114,7 +1114,23 @@ async function viewAdmin() {
 
 // --- Konto -----------------------------------------------------------------------
 // --- Kompaktansicht -------------------------------------------------------------
+function canEnd(a) {
+  return can('alarm.view_all') || can('alarm.end') || a.sender_id === state.me.id
+    || myRecipient(a)?.response === 'coming';
+}
+
+// Alarm auslösen aus der Kompaktansicht: derselbe Ablauf wie im Reiter „Alarm senden“.
+function viewCompactSend() {
+  const back = h('button', {
+    class: 'btn secondary small', style: 'margin-bottom:8px',
+    onclick: () => { state.compactSend = false; state.watching = null; state.draft = null; render(); },
+  }, '← Zur Übersicht');
+  const inner = viewSend();
+  return inner instanceof Promise ? inner.then((el) => h('div', {}, back, el)) : h('div', {}, back, inner);
+}
+
 function viewCompact() {
+  if (state.compactSend) return viewCompactSend();
   const list = [...state.alarms.values()].sort((x, y) => y.created_at.localeCompare(x.created_at));
   const pushOff = (can('alarm.receive') || can('alarm.view_qr')) && 'Notification' in window && Notification.permission !== 'granted';
   return h('div', {},
@@ -1131,8 +1147,22 @@ function viewCompact() {
             ? h('div', { class: 'compact-ok' }, `Kommt: ${coming.map((r) => r.display_name).join(', ')}`)
             : a.no_response_at
               ? h('div', { class: 'compact-warn' }, 'Keine Zusage! Bitte Durchsage oder Telefon.')
-              : h('div', { class: 'muted' }, a.escalated_at ? 'Noch keine Zusage, alle Sanitäter alarmiert' : 'Noch keine Zusage'));
+              : h('div', { class: 'muted' }, a.escalated_at ? 'Noch keine Zusage, alle Sanitäter alarmiert' : 'Noch keine Zusage'),
+          canEnd(a) ? h('button', {
+            class: 'btn danger small', style: 'margin-top:6px',
+            onclick: guard(async () => {
+              if (!confirm(`Einsatz in ${a.location} beenden?`)) return;
+              await api(`/alarms/${a.id}/end`, { method: 'POST' });
+              state.alarms.delete(a.id);
+              updateBadge();
+              render();
+            }),
+          }, 'Einsatz beenden') : null);
       }),
+    can('alarm.send') ? h('button', {
+      class: 'btn danger', style: 'margin-top:12px; width:100%',
+      onclick: () => { state.compactSend = true; state.watching = null; state.draft = null; render(); },
+    }, 'Alarm auslösen') : null,
     pushOff ? h('button', {
       class: 'btn secondary small', style: 'margin-top:12px',
       onclick: guard(async () => { await subscribePush(true); toast('Mitteilungen eingeschaltet'); render(); }),

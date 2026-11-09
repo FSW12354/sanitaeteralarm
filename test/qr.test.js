@@ -155,3 +155,20 @@ test('Sekretariat sieht Alarme per QR-Code und bekommt den Hinweis ohne Zusage',
   const other = (await lehrer('/api/alarms', { method: 'POST', body: { locationId: loc, injuryId: inj, urgency: 'green' } })).data;
   assert.equal((await sek('/api/alarms')).data.some((a) => a.id === other.id), false);
 });
+
+test('Sekretariat beendet Alarme per QR-Code, fremde Alarme bleiben geschützt', async (t) => {
+  const s = await start();
+  t.after(s.close);
+  const { token } = await makeCode(s);
+  const sek = await s.login('sek');
+  const { data } = await s.call(`/api/qr/${token}/alarm`, { method: 'POST', body: {} });
+  assert.equal((await sek(`/api/alarms/${data.id}/end`, { method: 'POST' })).status, 200);
+  assert.ok(s.alarms.load(data.id).ended_at, 'beendet');
+  // Einen Alarm, den es nicht sehen darf, kann das Sekretariat auch nicht beenden.
+  const loc = s.database.prepare('SELECT id FROM locations LIMIT 1').get().id;
+  const inj = s.database.prepare('SELECT id FROM injury_types LIMIT 1').get().id;
+  const lehrer = await s.login('lehrer');
+  const other = (await lehrer('/api/alarms', { method: 'POST', body: { locationId: loc, injuryId: inj, urgency: 'green' } })).data;
+  assert.equal((await sek(`/api/alarms/${other.id}/end`, { method: 'POST' })).status, 404);
+  assert.equal(s.alarms.load(other.id).ended_at, null);
+});
